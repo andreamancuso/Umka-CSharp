@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>UmkaSharp</RootNamespace>
+    <AssemblyName>UmkaSharp</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>UmkaSharp</PackageId>
+    <Title>UmkaSharp</Title>
+    <Authors>Andrea Mancuso</Authors>
+    <Description>A .NET bridge for embedding the Umka programming language in C# applications.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/andreamancuso/Umka-CSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/andreamancuso/Umka-CSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>umka;scripting;interop;embedding;language-bridge</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\runtimes')">
+    <None Include="..\..\runtimes\**\*" Pack="true" PackagePath="runtimes" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <NativeShimPath Condition="'$(OS)' == 'Windows_NT' And Exists('$(MSBuildThisFileDirectory)../../native/build/Release/umka_shim.dll')">$(MSBuildThisFileDirectory)../../native/build/Release/umka_shim.dll</NativeShimPath>
+    <NativeShimPath Condition="'$(OS)' == 'Windows_NT' And '$(NativeShimPath)' == '' And Exists('$(MSBuildThisFileDirectory)../../native/build/Debug/umka_shim.dll')">$(MSBuildThisFileDirectory)../../native/build/Debug/umka_shim.dll</NativeShimPath>
+    <NativeShimPath Condition="'$(OS)' != 'Windows_NT' And Exists('$(MSBuildThisFileDirectory)../../native/build/libumka_shim.so')">$(MSBuildThisFileDirectory)../../native/build/libumka_shim.so</NativeShimPath>
+    <NativeShimPath Condition="'$(OS)' != 'Windows_NT' And '$(NativeShimPath)' == '' And Exists('$(MSBuildThisFileDirectory)../../native/build/libumka_shim.dylib')">$(MSBuildThisFileDirectory)../../native/build/libumka_shim.dylib</NativeShimPath>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(NativeShimPath)' != ''">
+    <Content Include="$(NativeShimPath)" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" Pack="false" />
+  </ItemGroup>
+</Project>

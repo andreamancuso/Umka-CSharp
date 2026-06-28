@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            artifact: native/build/Release/umka_shim.dll
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact: native/build/libumka_shim.so
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout Umka
+        uses: actions/checkout@v4
+        with:
+          repository: vtereshkov/umka-lang
+          path: external/umka-lang
+
+      - name: Configure native shim
+        run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+        env:
+          UMKA_ROOT: ${{ github.workspace }}/external/umka-lang
+
+      - name: Build native shim
+        run: cmake --build native/build --config Release
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  test:
+    needs: build-native
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            artifact-name: native-win-x64
+            artifact-path: native/build/Release
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact-name: native-linux-x64
+            artifact-path: native/build
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Download native artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+
+      - name: Restore
+        run: dotnet restore UmkaSharp.sln
+
+      - name: Build
+        run: dotnet build UmkaSharp.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test UmkaSharp.sln --configuration Release --no-build --verbosity normal
+
+  pack:
+    needs: [build-native, test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble runtimes
+        run: |
+          mkdir -p runtimes/win-x64/native
+          mkdir -p runtimes/linux-x64/native
+          cp artifacts/native-win-x64/umka_shim.dll runtimes/win-x64/native/
+          cp artifacts/native-linux-x64/libumka_shim.so runtimes/linux-x64/native/
+
+      - name: Determine version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            VERSION="${RELEASE_TAG#v}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.1.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        run: >
+          dotnet pack src/UmkaSharp/UmkaSharp.csproj
+          --configuration Release
+          /p:Version=${{ steps.version.outputs.version }}
+          --output nupkg
+
+      - name: Verify packed package
+        shell: pwsh
+        run: ./scripts/verify-package-local.ps1 -Version ${{ steps.version.outputs.version }} -Configuration Release -PackageDirectory nupkg
+
+      - name: Upload NuGet package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: |
+            nupkg/*.nupkg
+            nupkg/*.snupkg
+
+  publish:
+    needs: pack
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' && github.event.action == 'published'
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-package
+          path: nupkg
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish package to NuGet
+        run: >
+          dotnet nuget push nupkg/*.nupkg
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+      - name: Publish symbols to NuGet
+        run: >
+          dotnet nuget push nupkg/*.snupkg
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

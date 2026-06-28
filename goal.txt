@@ -1,0 +1,22 @@
+/goal Build and prepare UmkaSharp as an early alpha .NET 9 NuGet package candidate so it can be reviewed, published to NuGet by repository-owner creation of a GitHub release, installed with `dotnet add package UmkaSharp`, and used for basic Umka embedding from ordinary .NET projects.
+
+Success criteria:
+- Create a clean .NET solution for UmkaSharp with a public API for embedding Umka from C#.
+- Include or build the required native Umka bridge/runtime libraries for supported RIDs, starting with win-x64 and linux-x64.
+- Use the local Umka source checkout at `C:\dev\umka-lang` as the initial upstream source for native bridge development, while keeping the build configurable through `UMKA_ROOT` for CI and future vendoring/submodule changes.
+- Provide a safe first-pass runtime API for lifecycle management, source compilation, exported function invocation, C# callback registration, module loading, basic typed marshalling, and error reporting.
+- Add focused tests that exercise runtime startup, source compilation, Umka-to-C# callbacks, C#-to-Umka calls, strings, primitives, and representative structured values.
+- Configure NuGet metadata, package layout, README, license notices, symbols/source settings where appropriate, and RID-specific native assets.
+- Add repeatable build, test, pack, and release-publish workflows, including versioning and documentation for repository-owner publishing to nuget.org. NuGet publishing must happen only from the GitHub `release.published` event.
+- Verify the produced package by installing it into a small sample project and running a script through UmkaSharp successfully.
+
+Non-goals for this alpha milestone:
+- Do not claim JanetSharp-level maturity, breadth, performance, or production readiness.
+- Do not claim broad Umka API or language feature coverage beyond the tested embedding surface.
+- Do not publish to NuGet from ordinary pushes, pull requests, manual workflow runs, or tag pushes. Publishing is allowed only when the repository owner creates/publishes a GitHub release.
+
+Follow-up goals before calling UmkaSharp mature:
+- Perform a JanetSharp-vs-UmkaSharp parity audit covering API surface, embedding model, marshalling, callbacks, error handling, package layout, tests, documentation, and samples.
+- Add broader marshalling support for complex Umka types and representative language/runtime features.
+- Add performance benchmarks, leak/stress tests, and longer-running runtime reliability tests.
+- Expand supported RIDs after validating native builds and package consumption on each platform.

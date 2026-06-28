@@ -18,10 +18,18 @@ x86/
 [Aa][Rr][Mm]/
 [Aa][Rr][Mm]64/
 bld/
+[Bb]uild/
 [Bb]in/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+
+# IDE/editor state
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
 # .NET Core
 project.lock.json
@@ -35,6 +43,14 @@ ScaffoldingReadMe.txt
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
+
+# Generated native package assets
+runtimes/
+native/build*/
+native/out/
+*.obj
+*.exp
+*.lib
 
 # dotenv environment variables file
 .env
