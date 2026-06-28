@@ -55,6 +55,9 @@ native/out/
 # dotenv environment variables file
 .env
 
+# Local Codex goal state
+goal.txt
+
 # Others
 ~$*
 *~
