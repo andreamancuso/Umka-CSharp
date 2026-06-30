@@ -41,7 +41,7 @@ Call `Compile()` before `GetFunction()`.
 
 ## Wrong Argument Count
 
-Check `UmkaFunction.ParameterCount`. Calls must pass exactly that many `UmkaValue` arguments.
+Check `UmkaFunction.RequiredParameterCount` and `UmkaFunction.ParameterCount`. Calls must pass at least the required count and no more than the total count. Omitted trailing defaults are supported only for scalar, string, and pointer default values. Current Umka source rejects weak pointer default expressions, so pass weak pointer arguments explicitly.
 
 ## Runtime Used From Another Thread
 

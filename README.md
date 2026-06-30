@@ -80,12 +80,16 @@ The first public marshalling layer is explicit and copy-based. Supported values 
 
 - signed and unsigned integers, including checked narrow helpers
 - `real`, `real32`, `bool`, `char`, and `str`
-- raw pointers and runtime-owned host handles
-- fixed-layout structs and static arrays through strict and try-style value factories, value readers, function readers, and callback readers when managed and native sizes match
+- raw pointers, opaque weak pointer handles, and runtime-owned host handles
+- fixed-layout structs and static arrays through strict and try-style value factories, value readers, function readers, and callback readers when managed and native sizes match, including weak pointer fields or elements as `ulong` opaque handles
+- dynamic arrays across supported call/result/callback directions when element values contain no Umka-managed references, including `[]weak ^T` as `ulong[]` opaque handle arrays
+- `[]str` dynamic arrays through string-specific copy APIs (`UmkaValue.FromDynamicArray(string?[])`, `CallStringArray`, and `GetStringArray`)
+- nested dynamic arrays such as `[][]int` and `[][]str` through `UmkaValue.FromNestedDynamicArray`, `CallNestedDynamicArray<TElement>`, `GetNestedDynamicArray<TElement>`, `CallNestedStringArray`, and `GetNestedStringArray` when inner element values contain no Umka-managed references or are direct `str`
+- map results and callback map arguments copied into managed dictionaries when key/value types are fixed-layout values without Umka-managed references, direct `str` values copied through string-specific map APIs, dynamic-array values have reference-free or direct-`str` elements, or weak pointer handles copied as `ulong`
 - generic scalar helpers through `FromScalar<T>()`, `TryFromScalar<T>()`, `AsScalar<T>()`, `TryAsScalar<T>()`, `CallScalar<T>()`, `TryCallScalar<T>()`, `GetScalar<T>()`, and `TryGetScalar<T>()`
-- dynamic scalar/string/pointer/void results through `CallValue()` and `TryCallValue()`
+- dynamic scalar/string/pointer/weak-pointer/void results through `CallValue()` and `TryCallValue()`
 
-Dynamic arrays, maps, interfaces, closures, fibers, weak pointers, `any`, and reference-bearing aggregates are exposed only as metadata or rejected until safe ownership rules exist.
+Interfaces, fibers, `any`, reference-bearing aggregates, reference-bearing dynamic-array elements other than direct `str` or supported nested arrays, map keys or values containing Umka-managed references other than direct `str` or supported dynamic-array values with reference-free or direct-`str` elements, C# map arguments, C# callback map results, and long-lived rooted heap wrappers are exposed only as metadata or rejected with diagnostics. C# map arguments and C# callback map results are blocked by Umka's current public C API: it exposes map lookup/type metadata, but not host-side map creation, insertion, rooting, ownership transfer, or assignment/reference-count updates. Closure values are metadata-only because Umka closures carry captured `any` upvalue state that UmkaSharp does not root, retain, or invoke from C#. Fiber values are metadata-only because Umka stores them as internal `Fiber *` VM state and exposes creation/resume through language builtins rather than public host C API functions.
 
 ## Local Native Build
 

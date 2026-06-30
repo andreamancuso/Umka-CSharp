@@ -258,6 +258,73 @@ public sealed class UmkaRuntime : IDisposable
         Action<UmkaRuntime>? configure = null) =>
         TryCompileCreated(FromSource(source, fileName, options), configure, out runtime, out error);
 
+    /// <summary>Creates, compiles, runs, and disposes a runtime from an Umka source string.</summary>
+    public static void RunSource(
+        string source,
+        string fileName = "main.um",
+        int stackSize = DefaultStackSize,
+        bool fileSystemEnabled = false,
+        bool implementationLibrariesEnabled = false,
+        IReadOnlyList<string>? arguments = null,
+        Action<UmkaRuntime>? configure = null)
+    {
+        using var runtime = CompileSource(
+            source,
+            fileName,
+            stackSize,
+            fileSystemEnabled,
+            implementationLibrariesEnabled,
+            arguments,
+            configure);
+        runtime.Run();
+    }
+
+    /// <summary>Creates, compiles, runs, and disposes a runtime from an Umka source string.</summary>
+    public static void RunSource(
+        string source,
+        UmkaRuntimeOptions? options,
+        Action<UmkaRuntime>? configure = null) =>
+        RunSource(source, "main.um", options, configure);
+
+    /// <summary>Creates, compiles, runs, and disposes a runtime from an Umka source string.</summary>
+    public static void RunSource(
+        string source,
+        string fileName,
+        UmkaRuntimeOptions? options,
+        Action<UmkaRuntime>? configure = null)
+    {
+        using var runtime = CompileSource(source, fileName, options, configure);
+        runtime.Run();
+    }
+
+    /// <summary>Tries to create, compile, run, and dispose a runtime from an Umka source string.</summary>
+    public static bool TryRunSource(
+        string source,
+        [NotNullWhen(false)] out UmkaException? exception,
+        UmkaRuntimeOptions? options = null,
+        Action<UmkaRuntime>? configure = null) =>
+        TryRunSource(source, "main.um", out exception, options, configure);
+
+    /// <summary>Tries to create, compile, run, and dispose a runtime from an Umka source string.</summary>
+    public static bool TryRunSource(
+        string source,
+        string fileName,
+        [NotNullWhen(false)] out UmkaException? exception,
+        UmkaRuntimeOptions? options = null,
+        Action<UmkaRuntime>? configure = null)
+    {
+        if (!TryCompileSource(source, fileName, out var runtime, out var error, options, configure))
+        {
+            exception = new UmkaException(error);
+            return false;
+        }
+
+        using (runtime)
+        {
+            return runtime.TryRun(out exception);
+        }
+    }
+
     private static UmkaRuntimeOptions ValidateOptions(UmkaRuntimeOptions? options)
     {
         options ??= new UmkaRuntimeOptions();
@@ -626,25 +693,19 @@ public sealed class UmkaRuntime : IDisposable
         var parameterCount = NativeMethods.ContextGetArgumentCount(ref context);
         var parameterTypes = new UmkaTypeInfo[parameterCount];
         var nativeParameterKinds = new NativeUmkaTypeKind[parameterCount];
+        var nativeParameterElementKinds = new NativeUmkaTypeKind[parameterCount];
         for (var i = 0; i < parameterCount; i++)
         {
             var kind = NativeMethods.ContextGetParameterKind(ref context, i);
             nativeParameterKinds[i] = kind;
-            parameterTypes[i] = UmkaTypeInfoFactory.Create(
-                kind,
-                NativeMethods.ContextGetParameterTypeName(ref context, i).ToManagedString(),
-                NativeMethods.ContextGetParameterSize(ref context, i),
-                NativeMethods.ContextGetParameterItemCount(ref context, i),
-                NativeMethods.ContextGetParameterHasReferences(ref context, i) != 0);
+            nativeParameterElementKinds[i] = NativeMethods.ContextGetParameterElementKind(ref context, i);
+            parameterTypes[i] = CreateContextParameterTypeInfo(ref context, i, kind);
         }
 
         var resultKind = NativeMethods.ContextGetResultKind(ref context);
-        var resultType = UmkaTypeInfoFactory.Create(
-            resultKind,
-            NativeMethods.ContextGetResultTypeName(ref context).ToManagedString(),
-            NativeMethods.ContextGetResultSize(ref context),
-            NativeMethods.ContextGetResultItemCount(ref context),
-            NativeMethods.ContextGetResultHasReferences(ref context) != 0);
+        var resultType = CreateContextResultTypeInfo(ref context, resultKind);
+        var requiredParameterCount = NativeMethods.ContextGetRequiredArgumentCount(ref context);
+        var defaultParameterCount = NativeMethods.ContextGetDefaultArgumentCount(ref context);
 
         function = new UmkaFunction(
             this,
@@ -653,8 +714,122 @@ public sealed class UmkaRuntime : IDisposable
             context,
             parameterTypes,
             nativeParameterKinds,
+            nativeParameterElementKinds,
+            requiredParameterCount,
+            defaultParameterCount,
             resultType);
         return true;
+    }
+
+    private static UmkaTypeInfo CreateContextParameterTypeInfo(
+        ref NativeMethods.FunctionContext context,
+        int index,
+        NativeUmkaTypeKind kind)
+    {
+        var isEnum = NativeMethods.ContextGetParameterIsEnum(ref context, index) != 0;
+        return UmkaTypeInfoFactory.Create(
+            kind,
+            NativeMethods.ContextGetParameterTypeName(ref context, index).ToManagedString(),
+            NativeMethods.ContextGetParameterSize(ref context, index),
+            NativeMethods.ContextGetParameterItemCount(ref context, index),
+            NativeMethods.ContextGetParameterHasReferences(ref context, index) != 0,
+            isEnum,
+            isEnum ? GetContextParameterEnumMembers(ref context, index) : Array.Empty<UmkaEnumMemberInfo>(),
+            NativeMethods.ContextGetParameterElementKind(ref context, index),
+            NativeMethods.ContextGetParameterElementTypeName(ref context, index).ToManagedString(),
+            NativeMethods.ContextGetParameterElementSize(ref context, index),
+            NativeMethods.ContextGetParameterElementHasReferences(ref context, index) != 0,
+            NativeMethods.ContextGetParameterNestedElementKind(ref context, index),
+            NativeMethods.ContextGetParameterNestedElementTypeName(ref context, index).ToManagedString(),
+            NativeMethods.ContextGetParameterNestedElementSize(ref context, index),
+            NativeMethods.ContextGetParameterNestedElementHasReferences(ref context, index) != 0,
+            NativeMethods.ContextGetParameterMapKeyKind(ref context, index),
+            NativeMethods.ContextGetParameterMapKeyTypeName(ref context, index).ToManagedString(),
+            NativeMethods.ContextGetParameterMapKeySize(ref context, index),
+            NativeMethods.ContextGetParameterMapKeyHasReferences(ref context, index) != 0,
+            NativeMethods.ContextGetParameterMapValueKind(ref context, index),
+            NativeMethods.ContextGetParameterMapValueTypeName(ref context, index).ToManagedString(),
+            NativeMethods.ContextGetParameterMapValueSize(ref context, index),
+            NativeMethods.ContextGetParameterMapValueHasReferences(ref context, index) != 0,
+            NativeMethods.ContextGetParameterMapValueElementKind(ref context, index),
+            NativeMethods.ContextGetParameterMapValueElementTypeName(ref context, index).ToManagedString(),
+            NativeMethods.ContextGetParameterMapValueElementSize(ref context, index),
+            NativeMethods.ContextGetParameterMapValueElementHasReferences(ref context, index) != 0,
+            NativeMethods.ContextGetParameterIsVariadicParameterList(ref context, index) != 0);
+    }
+
+    private static UmkaTypeInfo CreateContextResultTypeInfo(
+        ref NativeMethods.FunctionContext context,
+        NativeUmkaTypeKind kind)
+    {
+        var isEnum = NativeMethods.ContextGetResultIsEnum(ref context) != 0;
+        return UmkaTypeInfoFactory.Create(
+            kind,
+            NativeMethods.ContextGetResultTypeName(ref context).ToManagedString(),
+            NativeMethods.ContextGetResultSize(ref context),
+            NativeMethods.ContextGetResultItemCount(ref context),
+            NativeMethods.ContextGetResultHasReferences(ref context) != 0,
+            isEnum,
+            isEnum ? GetContextResultEnumMembers(ref context) : Array.Empty<UmkaEnumMemberInfo>(),
+            NativeMethods.ContextGetResultElementKind(ref context),
+            NativeMethods.ContextGetResultElementTypeName(ref context).ToManagedString(),
+            NativeMethods.ContextGetResultElementSize(ref context),
+            NativeMethods.ContextGetResultElementHasReferences(ref context) != 0,
+            NativeMethods.ContextGetResultNestedElementKind(ref context),
+            NativeMethods.ContextGetResultNestedElementTypeName(ref context).ToManagedString(),
+            NativeMethods.ContextGetResultNestedElementSize(ref context),
+            NativeMethods.ContextGetResultNestedElementHasReferences(ref context) != 0,
+            NativeMethods.ContextGetResultMapKeyKind(ref context),
+            NativeMethods.ContextGetResultMapKeyTypeName(ref context).ToManagedString(),
+            NativeMethods.ContextGetResultMapKeySize(ref context),
+            NativeMethods.ContextGetResultMapKeyHasReferences(ref context) != 0,
+            NativeMethods.ContextGetResultMapValueKind(ref context),
+            NativeMethods.ContextGetResultMapValueTypeName(ref context).ToManagedString(),
+            NativeMethods.ContextGetResultMapValueSize(ref context),
+            NativeMethods.ContextGetResultMapValueHasReferences(ref context) != 0,
+            NativeMethods.ContextGetResultMapValueElementKind(ref context),
+            NativeMethods.ContextGetResultMapValueElementTypeName(ref context).ToManagedString(),
+            NativeMethods.ContextGetResultMapValueElementSize(ref context),
+            NativeMethods.ContextGetResultMapValueElementHasReferences(ref context) != 0,
+            NativeMethods.ContextGetResultIsVariadicParameterList(ref context) != 0);
+    }
+
+    private static UmkaEnumMemberInfo[] GetContextParameterEnumMembers(
+        ref NativeMethods.FunctionContext context,
+        int index)
+    {
+        var count = NativeMethods.ContextGetParameterEnumMemberCount(ref context, index);
+        if (count <= 0)
+            return Array.Empty<UmkaEnumMemberInfo>();
+
+        var members = new UmkaEnumMemberInfo[count];
+        for (var i = 0; i < members.Length; i++)
+        {
+            members[i] = new UmkaEnumMemberInfo(
+                NativeMethods.ContextGetParameterEnumMemberName(ref context, index, i).ToManagedString() ?? "unknown",
+                NativeMethods.ContextGetParameterEnumMemberSignedValue(ref context, index, i),
+                NativeMethods.ContextGetParameterEnumMemberUnsignedValue(ref context, index, i));
+        }
+
+        return members;
+    }
+
+    private static UmkaEnumMemberInfo[] GetContextResultEnumMembers(ref NativeMethods.FunctionContext context)
+    {
+        var count = NativeMethods.ContextGetResultEnumMemberCount(ref context);
+        if (count <= 0)
+            return Array.Empty<UmkaEnumMemberInfo>();
+
+        var members = new UmkaEnumMemberInfo[count];
+        for (var i = 0; i < members.Length; i++)
+        {
+            members[i] = new UmkaEnumMemberInfo(
+                NativeMethods.ContextGetResultEnumMemberName(ref context, i).ToManagedString() ?? "unknown",
+                NativeMethods.ContextGetResultEnumMemberSignedValue(ref context, i),
+                NativeMethods.ContextGetResultEnumMemberUnsignedValue(ref context, i));
+        }
+
+        return members;
     }
 
     /// <summary>Gets the last error reported by the Umka runtime.</summary>

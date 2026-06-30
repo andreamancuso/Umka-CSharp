@@ -650,6 +650,57 @@ public sealed class RuntimeErrorTests
     }
 
     [Fact]
+    public void TryRunSource_returns_compile_errors_as_exception_and_disposes_runtime()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        UmkaRuntime? configuredRuntime = null;
+
+        Assert.False(UmkaRuntime.TryRunSource(
+            "fn broken*( {",
+            out var exception,
+            configure: runtime => configuredRuntime = runtime));
+
+        Assert.NotNull(exception);
+        Assert.False(string.IsNullOrWhiteSpace(exception.Error.Message));
+        Assert.NotNull(configuredRuntime);
+        Assert.True(configuredRuntime.IsDisposed);
+    }
+
+    [Fact]
+    public void TryRunSource_returns_runtime_errors_as_exception_and_disposes_runtime()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        UmkaRuntime? configuredRuntime = null;
+        UmkaCallback? callback = null;
+
+        Assert.False(UmkaRuntime.TryRunSource(
+            """
+            import "host.um"
+
+            fn main() {
+                host::explode()
+            }
+            """,
+            out var exception,
+            configure: runtime =>
+            {
+                configuredRuntime = runtime;
+                runtime.AddModule("host.um", "fn explode*()");
+                callback = runtime.Register("explode", _ => throw new InvalidOperationException("boom"));
+            }));
+
+        Assert.NotNull(exception);
+        Assert.NotNull(callback);
+        var callbackException = Assert.IsType<InvalidOperationException>(callback.LastException);
+        Assert.Same(callbackException, exception.InnerException);
+        Assert.Contains("Managed callback failed", exception.Error.Message);
+        Assert.NotNull(configuredRuntime);
+        Assert.True(configuredRuntime.IsDisposed);
+    }
+
+    [Fact]
     public void Run_callback_failures_include_managed_inner_exception()
     {
         NativeTestEnvironment.RequireNativeShim();
@@ -781,35 +832,103 @@ public sealed class RuntimeErrorTests
     }
 
     [Fact]
-    public void Function_requires_explicit_arguments_for_umka_default_parameters()
+    public void Function_accepts_omitted_supported_umka_default_parameters()
     {
         NativeTestEnvironment.RequireNativeShim();
 
         using var runtime = UmkaRuntime.FromSource("""
-            fn add*(value: int, bonus: int = 5): int {
-                return value + bonus
+            fn add*(value: int, bonus: int = 5, scale: real = 2.0): real {
+                return real(value + bonus) * scale
+            }
+
+            fn greet*(name: str, suffix: str = "!"): str {
+                return name + suffix
             }
             """);
 
         runtime.Compile();
         var add = runtime.GetFunction("add");
+        var greet = runtime.GetFunction("greet");
 
-        Assert.Equal(2, add.ParameterCount);
-        Assert.Equal(42, add.CallInt64(UmkaValue.From(37), UmkaValue.From(5)));
+        Assert.Equal(3, add.ParameterCount);
+        Assert.Equal(1, add.RequiredParameterCount);
+        Assert.Equal(2, add.DefaultParameterCount);
+        Assert.True(add.CanCallWith(UmkaValue.From(16)));
+        Assert.True(add.CanCallWith(UmkaValue.From(16), UmkaValue.From(5)));
+        Assert.True(add.CanCallWith(UmkaValue.From(16), UmkaValue.From(5), UmkaValue.From(2.0)));
+        Assert.False(add.CanCallWith());
+        Assert.False(add.CanCallWith(
+            UmkaValue.From(16),
+            UmkaValue.From(5),
+            UmkaValue.From(2.0),
+            UmkaValue.From(1)));
+        Assert.Equal(42.0, add.CallDouble(UmkaValue.From(16)));
+        Assert.Equal(44.0, add.CallDouble(UmkaValue.From(17), UmkaValue.From(5)));
+        Assert.Equal(66.0, add.CallDouble(UmkaValue.From(17), UmkaValue.From(5), UmkaValue.From(3.0)));
 
-        var ex = Assert.Throws<ArgumentException>(() => add.CallInt64(UmkaValue.From(37)));
-
-        Assert.Contains("expects 2 argument", ex.Message);
+        Assert.Equal(2, greet.ParameterCount);
+        Assert.Equal(1, greet.RequiredParameterCount);
+        Assert.Equal(1, greet.DefaultParameterCount);
+        Assert.Equal("Umka!", greet.CallString(UmkaValue.From("Umka")));
+        Assert.Equal("Umka?", greet.CallString(UmkaValue.From("Umka"), UmkaValue.From("?")));
     }
 
     [Fact]
-    public void Function_exposes_variadic_parameters_as_unsupported_dynamic_array_arguments()
+    public void Function_rejects_omitted_defaults_for_unsupported_parameter_types()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            fn ignore*(value: any = null): int {
+                return 42
+            }
+            """);
+
+        runtime.Compile();
+        var ignore = runtime.GetFunction("ignore");
+
+        Assert.Equal(1, ignore.ParameterCount);
+        Assert.Equal(0, ignore.RequiredParameterCount);
+        Assert.Equal(1, ignore.DefaultParameterCount);
+        Assert.False(ignore.CanCallWith());
+        var ex = Assert.Throws<ArgumentException>(() => ignore.CallInt64());
+
+        Assert.Contains("cannot synthesize", ex.Message);
+    }
+
+    [Fact]
+    public void Function_weak_pointer_defaults_are_rejected_by_umka_compile_boundary()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        var compiled = UmkaRuntime.TryCompileSource("""
+            fn choose*(value: weak ^int = null): int {
+                return 1
+            }
+            """, out var runtime, out var error);
+
+        Assert.False(compiled);
+        Assert.Null(runtime);
+        Assert.NotNull(error);
+        Assert.Contains("Conversion to weak pointer is not allowed in constant expressions", error.Message);
+    }
+
+    [Fact]
+    public void Function_accepts_variadic_parameters_as_explicit_or_expanded_dynamic_array_arguments()
     {
         NativeTestEnvironment.RequireNativeShim();
 
         using var runtime = UmkaRuntime.FromSource("""
             fn count*(values: ..int): int {
                 return len(values)
+            }
+
+            fn sumTiny*(seed: int, values: ..int8): int {
+                total := seed
+                for _, value in values {
+                    total += value
+                }
+                return total
             }
             """);
 
@@ -818,12 +937,32 @@ public sealed class RuntimeErrorTests
         var parameterType = Assert.Single(count.ParameterTypes);
 
         Assert.Equal(1, count.ParameterCount);
+        Assert.Equal(0, count.RequiredParameterCount);
         Assert.Equal(UmkaTypeKind.DynamicArray, parameterType.Kind);
-        Assert.Throws<ArgumentException>(() => count.CallInt64());
+        Assert.True(parameterType.IsVariadicParameterList);
+        Assert.True(count.CanCallWith());
+        Assert.True(count.CanCallWith(UmkaValue.FromDynamicArray(1L, 2L, 3L)));
+        Assert.True(count.CanCallWith(UmkaValue.From(1L), UmkaValue.From(2L), UmkaValue.From(3L)));
+        Assert.Equal(0, count.CallInt64());
+        Assert.Equal(3, count.CallInt64(UmkaValue.FromDynamicArray(1L, 2L, 3L)));
+        Assert.Equal(3, count.CallInt64(UmkaValue.From(1L), UmkaValue.From(2L), UmkaValue.From(3L)));
 
-        var ex = Assert.Throws<ArgumentException>(() => count.CallInt64(UmkaValue.From(1)));
+        var sumTiny = runtime.GetFunction("sumTiny");
+        Assert.Equal(2, sumTiny.ParameterCount);
+        Assert.Equal(1, sumTiny.RequiredParameterCount);
+        Assert.True(sumTiny.ParameterTypes[1].IsVariadicParameterList);
+        Assert.True(sumTiny.CanCallWith(UmkaValue.From(10L)));
+        Assert.True(sumTiny.CanCallWith(UmkaValue.From(10L), UmkaValue.From((sbyte)1), UmkaValue.From((sbyte)2)));
+        Assert.False(sumTiny.CanCallWith());
+        Assert.False(sumTiny.CanCallWith(UmkaValue.From(10L), UmkaValue.From(128L)));
+        Assert.Equal(10, sumTiny.CallInt64(UmkaValue.From(10L)));
+        Assert.Equal(13, sumTiny.CallInt64(UmkaValue.From(10L), UmkaValue.From((sbyte)1), UmkaValue.From((sbyte)2)));
 
-        Assert.Contains("does not support as a call argument", ex.Message);
+        var kindEx = Assert.Throws<ArgumentException>(() => count.CallInt64(UmkaValue.From("text")));
+        Assert.Contains("value kind String", kindEx.Message);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            sumTiny.CallInt64(UmkaValue.From(10L), UmkaValue.From(128L)));
     }
 
     [Fact]

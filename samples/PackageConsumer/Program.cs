@@ -367,18 +367,25 @@ var dynamicArguments = runtime.GetFunction("argumentSummary").CallValue().AsStri
 var dynamicTruth = runtime.GetFunction("truth").CallValue().AsBoolean();
 var dynamicRatio = runtime.GetFunction("ratio").CallValue().AsDouble();
 var dynamicPointer = runtime.GetFunction("nullHandle").CallValue().AsPointer();
+var weakPointerHandle = runtime.GetFunction("weakPointerValue").CallWeakPointer();
+var dynamicWeakPointer = runtime.GetFunction("weakPointerValue").CallValue();
 var dynamicVoid = runtime.GetFunction("tick").CallValue();
 if (dynamicAnswer != 42 ||
     dynamicArguments != arguments ||
     !dynamicTruth ||
     dynamicRatio != 2.5 ||
     dynamicPointer != IntPtr.Zero ||
+    dynamicWeakPointer.Kind != UmkaValueKind.WeakPointer ||
+    dynamicWeakPointer.AsWeakPointer() != weakPointerHandle ||
     dynamicVoid.Kind != UmkaValueKind.Void)
 {
     throw new InvalidOperationException("Dynamic CallValue results did not roundtrip.");
 }
+if (runtime.GetFunction("takeWeakPointer").CallInt64(UmkaValue.FromWeakPointer(weakPointerHandle)) != 0)
+    throw new InvalidOperationException("Weak pointer argument did not roundtrip.");
+
 var negativeValidation = VerifyManagedValidation(scoreFunction, rangeFunction, runtime.GetFunction("values"));
-var unsupportedBoundary = VerifyUnsupportedBoundary(runtime);
+var deferredBoundary = VerifyDeferredBoundary(runtime);
 var stringBoundary = VerifyStringBoundaryValidation(runtime);
 var fileSystem = VerifyFileSystemOption();
 
@@ -399,7 +406,7 @@ Console.WriteLine($"args={arguments}");
 Console.WriteLine(FormattableString.Invariant(
     $"dynamic={dynamicAnswer}:{dynamicArguments}:{dynamicTruth}:{dynamicRatio:0.0}:zero:{dynamicVoid.Kind}"));
 Console.WriteLine($"negative={negativeValidation}");
-Console.WriteLine($"unsupported={unsupportedBoundary}");
+Console.WriteLine($"deferred={deferredBoundary}");
 Console.WriteLine($"strings={stringBoundary}");
 Console.WriteLine("warning=not-used");
 Console.WriteLine($"fs={fileSystem}");
@@ -417,7 +424,7 @@ static string VerifyManagedValidation(
     return "managed-validation";
 }
 
-static string VerifyUnsupportedBoundary(UmkaRuntime runtime)
+static string VerifyDeferredBoundary(UmkaRuntime runtime)
 {
     var argumentExpectations = new (string FunctionName, UmkaTypeKind Kind)[]
     {
@@ -426,7 +433,6 @@ static string VerifyUnsupportedBoundary(UmkaRuntime runtime)
         ("takeInterface", UmkaTypeKind.Interface),
         ("takeAny", UmkaTypeKind.Interface),
         ("takeClosure", UmkaTypeKind.Closure),
-        ("takeWeakPointer", UmkaTypeKind.WeakPointer),
         ("takeFiber", UmkaTypeKind.Fiber),
     };
 
@@ -437,7 +443,6 @@ static string VerifyUnsupportedBoundary(UmkaRuntime runtime)
         ("interfaceValue", UmkaTypeKind.Interface),
         ("closureValue", UmkaTypeKind.Closure),
         ("fiberValue", UmkaTypeKind.Fiber),
-        ("weakPointerValue", UmkaTypeKind.WeakPointer),
         ("anyValue", UmkaTypeKind.Interface),
     };
 

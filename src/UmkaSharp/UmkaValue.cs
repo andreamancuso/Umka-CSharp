@@ -26,7 +26,11 @@ public enum UmkaValueKind
     /// <summary>Fixed-size static array value.</summary>
     StaticArray,
     /// <summary>Fixed-size struct value.</summary>
-    Struct
+    Struct,
+    /// <summary>Dynamic array value copied into or out of Umka-owned storage.</summary>
+    DynamicArray,
+    /// <summary>Opaque Umka weak pointer handle value.</summary>
+    WeakPointer
 }
 #pragma warning restore CA1720
 
@@ -71,7 +75,8 @@ public readonly struct UmkaValue
             UmkaValueKind.Bool => _int64Value != 0,
             UmkaValueKind.String => _stringValue,
             UmkaValueKind.Pointer => _pointerValue,
-            UmkaValueKind.StaticArray or UmkaValueKind.Struct => _structuredValue?.Value,
+            UmkaValueKind.WeakPointer => _uint64Value,
+            UmkaValueKind.StaticArray or UmkaValueKind.Struct or UmkaValueKind.DynamicArray => _structuredValue?.Value,
             _ => null
         };
 
@@ -138,6 +143,9 @@ public readonly struct UmkaValue
 
     /// <summary>Creates a pointer value.</summary>
     public static UmkaValue FromPointer(IntPtr value) => new(UmkaValueKind.Pointer, pointerValue: value);
+
+    /// <summary>Creates an opaque Umka weak pointer handle value.</summary>
+    public static UmkaValue FromWeakPointer(ulong value) => new(UmkaValueKind.WeakPointer, uint64Value: value);
 
     /// <summary>Creates a scalar value from a supported managed scalar, string, pointer, enum, host handle, or existing Umka value.</summary>
     public static UmkaValue FromScalar<T>(T value)
@@ -248,6 +256,93 @@ public readonly struct UmkaValue
     public static UmkaValue FromStaticArray<TElement>(Span<TElement> values) where TElement : struct =>
         FromStaticArray((ReadOnlySpan<TElement>)values);
 
+    /// <summary>Creates a dynamic array value for an Umka dynamic array parameter or callback result.</summary>
+    public static UmkaValue FromDynamicArray<TElement>(params TElement[] values) where TElement : struct
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return FromDynamicArray((ReadOnlySpan<TElement>)values);
+    }
+
+    /// <summary>Creates a dynamic array value for an Umka dynamic array parameter or callback result.</summary>
+    public static UmkaValue FromDynamicArray<TElement>(ReadOnlySpan<TElement> values) where TElement : struct
+    {
+        ValidateNoManagedReferences<TElement>(nameof(values));
+        return new(
+            UmkaValueKind.DynamicArray,
+            structuredValue: StructuredValue.CreateDynamicArray(values, Marshal.SizeOf<TElement>()));
+    }
+
+    /// <summary>Creates a dynamic array value for an Umka dynamic array parameter or callback result.</summary>
+    public static UmkaValue FromDynamicArray<TElement>(Span<TElement> values) where TElement : struct =>
+        FromDynamicArray((ReadOnlySpan<TElement>)values);
+
+    /// <summary>Creates a string dynamic array value for an Umka <c>[]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromDynamicArray(params string?[] values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return FromDynamicArray((ReadOnlySpan<string?>)values);
+    }
+
+    /// <summary>Creates a string dynamic array value for an Umka <c>[]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromDynamicArray(ReadOnlySpan<string?> values) =>
+        new(
+            UmkaValueKind.DynamicArray,
+            structuredValue: StructuredValue.CreateStringDynamicArray(values));
+
+    /// <summary>Creates a string dynamic array value for an Umka <c>[]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromDynamicArray(Span<string?> values) =>
+        FromDynamicArray((ReadOnlySpan<string?>)values);
+
+    /// <summary>Creates a nested dynamic array value for an Umka <c>[][]T</c> parameter or callback result.</summary>
+    public static UmkaValue FromNestedDynamicArray<TElement>(params TElement[][] values) where TElement : struct
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return FromNestedDynamicArray((ReadOnlySpan<TElement[]>)values);
+    }
+
+    /// <summary>Creates a nested dynamic array value for an Umka <c>[][]T</c> parameter or callback result.</summary>
+    public static UmkaValue FromNestedDynamicArray<TElement>(ReadOnlySpan<TElement[]> values) where TElement : struct
+    {
+        ValidateNoManagedReferences<TElement>(nameof(values));
+        return new(
+            UmkaValueKind.DynamicArray,
+            structuredValue: StructuredValue.CreateNestedDynamicArray(values, Marshal.SizeOf<TElement>()));
+    }
+
+    /// <summary>Creates a nested dynamic array value for an Umka <c>[][]T</c> parameter or callback result.</summary>
+    public static UmkaValue FromNestedDynamicArray<TElement>(Span<TElement[]> values) where TElement : struct =>
+        FromNestedDynamicArray((ReadOnlySpan<TElement[]>)values);
+
+    /// <summary>Creates a nested string dynamic array value for an Umka <c>[][]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromNestedDynamicArray(params string?[][] values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return FromNestedDynamicArray((ReadOnlySpan<string?[]>)values);
+    }
+
+    /// <summary>Creates a nested string dynamic array value for an Umka <c>[][]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromNestedDynamicArray(ReadOnlySpan<string?[]> values) =>
+        new(
+            UmkaValueKind.DynamicArray,
+            structuredValue: StructuredValue.CreateNestedStringDynamicArray(values));
+
+    /// <summary>Creates a nested string dynamic array value for an Umka <c>[][]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromNestedDynamicArray(Span<string?[]> values) =>
+        FromNestedDynamicArray((ReadOnlySpan<string?[]>)values);
+
+    internal static UmkaValue FromRawDynamicArray(byte[] bytes, int length, int elementSize)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(elementSize);
+        if (bytes.Length != checked(length * elementSize))
+            throw new ArgumentException("Raw dynamic-array data length must match length times element size.", nameof(bytes));
+
+        return new(
+            UmkaValueKind.DynamicArray,
+            structuredValue: StructuredValue.CreateRawDynamicArray(bytes, length, elementSize));
+    }
+
     /// <summary>Tries to create a fixed-size static array value for an Umka static array parameter.</summary>
     public static bool TryFromStaticArray<TElement>(TElement[]? values, out UmkaValue result) where TElement : struct
     {
@@ -270,6 +365,149 @@ public readonly struct UmkaValue
         try
         {
             result = FromStaticArray(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a dynamic array value for an Umka dynamic array parameter or callback result.</summary>
+    public static bool TryFromDynamicArray<TElement>(TElement[]? values, out UmkaValue result) where TElement : struct
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        return TryFromDynamicArray((ReadOnlySpan<TElement>)values, out result);
+    }
+
+    /// <summary>Tries to create a dynamic array value for an Umka dynamic array parameter or callback result.</summary>
+    public static bool TryFromDynamicArray<TElement>(Span<TElement> values, out UmkaValue result) where TElement : struct =>
+        TryFromDynamicArray((ReadOnlySpan<TElement>)values, out result);
+
+    /// <summary>Tries to create a dynamic array value for an Umka dynamic array parameter or callback result.</summary>
+    public static bool TryFromDynamicArray<TElement>(ReadOnlySpan<TElement> values, out UmkaValue result) where TElement : struct
+    {
+        try
+        {
+            result = FromDynamicArray(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a string dynamic array value for an Umka <c>[]str</c> parameter or callback result.</summary>
+    public static bool TryFromDynamicArray(string?[]? values, out UmkaValue result)
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        return TryFromDynamicArray((ReadOnlySpan<string?>)values, out result);
+    }
+
+    /// <summary>Tries to create a string dynamic array value for an Umka <c>[]str</c> parameter or callback result.</summary>
+    public static bool TryFromDynamicArray(Span<string?> values, out UmkaValue result) =>
+        TryFromDynamicArray((ReadOnlySpan<string?>)values, out result);
+
+    /// <summary>Tries to create a string dynamic array value for an Umka <c>[]str</c> parameter or callback result.</summary>
+    public static bool TryFromDynamicArray(ReadOnlySpan<string?> values, out UmkaValue result)
+    {
+        try
+        {
+            result = FromDynamicArray(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a nested dynamic array value for an Umka <c>[][]T</c> parameter or callback result.</summary>
+    public static bool TryFromNestedDynamicArray<TElement>(TElement[][]? values, out UmkaValue result)
+        where TElement : struct
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        return TryFromNestedDynamicArray((ReadOnlySpan<TElement[]>)values, out result);
+    }
+
+    /// <summary>Tries to create a nested dynamic array value for an Umka <c>[][]T</c> parameter or callback result.</summary>
+    public static bool TryFromNestedDynamicArray<TElement>(Span<TElement[]> values, out UmkaValue result)
+        where TElement : struct =>
+        TryFromNestedDynamicArray((ReadOnlySpan<TElement[]>)values, out result);
+
+    /// <summary>Tries to create a nested dynamic array value for an Umka <c>[][]T</c> parameter or callback result.</summary>
+    public static bool TryFromNestedDynamicArray<TElement>(ReadOnlySpan<TElement[]> values, out UmkaValue result)
+        where TElement : struct
+    {
+        try
+        {
+            result = FromNestedDynamicArray(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a nested string dynamic array value for an Umka <c>[][]str</c> parameter or callback result.</summary>
+    public static bool TryFromNestedDynamicArray(string?[][]? values, out UmkaValue result)
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        return TryFromNestedDynamicArray((ReadOnlySpan<string?[]>)values, out result);
+    }
+
+    /// <summary>Tries to create a nested string dynamic array value for an Umka <c>[][]str</c> parameter or callback result.</summary>
+    public static bool TryFromNestedDynamicArray(Span<string?[]> values, out UmkaValue result) =>
+        TryFromNestedDynamicArray((ReadOnlySpan<string?[]>)values, out result);
+
+    /// <summary>Tries to create a nested string dynamic array value for an Umka <c>[][]str</c> parameter or callback result.</summary>
+    public static bool TryFromNestedDynamicArray(ReadOnlySpan<string?[]> values, out UmkaValue result)
+    {
+        try
+        {
+            result = FromNestedDynamicArray(values);
             return true;
         }
         catch (ArgumentException)
@@ -431,6 +669,23 @@ public readonly struct UmkaValue
     /// <summary>Reads the value as a pointer.</summary>
     public IntPtr AsPointer() => Kind == UmkaValueKind.Pointer ? _pointerValue : throw WrongKind(nameof(AsPointer));
 
+    /// <summary>Reads the value as an opaque Umka weak pointer handle.</summary>
+    public ulong AsWeakPointer() =>
+        Kind == UmkaValueKind.WeakPointer ? _uint64Value : throw WrongKind(nameof(AsWeakPointer));
+
+    /// <summary>Tries to read the value as an opaque Umka weak pointer handle.</summary>
+    public bool TryAsWeakPointer(out ulong value)
+    {
+        if (Kind == UmkaValueKind.WeakPointer)
+        {
+            value = _uint64Value;
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
     /// <summary>Reads the value as the original fixed-layout struct type.</summary>
     public T AsStruct<T>() where T : struct
     {
@@ -468,12 +723,118 @@ public readonly struct UmkaValue
             : throw WrongKind(nameof(AsStaticArray));
     }
 
+    /// <summary>Reads the value as a defensive copy of the original dynamic array type.</summary>
+    public TElement[] AsDynamicArray<TElement>() where TElement : struct
+    {
+        ValidateNoManagedReferences<TElement>();
+        return Kind == UmkaValueKind.DynamicArray
+            ? _structuredValue!.GetDynamicArray<TElement>()
+            : throw WrongKind(nameof(AsDynamicArray));
+    }
+
+    /// <summary>Reads the value as a defensive copy of the original string dynamic array.</summary>
+    public string?[] AsStringArray() =>
+        Kind == UmkaValueKind.DynamicArray
+            ? _structuredValue!.GetStringArray()
+            : throw WrongKind(nameof(AsStringArray));
+
+    /// <summary>Reads the value as a defensive copy of the original nested dynamic array type.</summary>
+    public TElement[][] AsNestedDynamicArray<TElement>() where TElement : struct
+    {
+        ValidateNoManagedReferences<TElement>();
+        return Kind == UmkaValueKind.DynamicArray
+            ? _structuredValue!.GetNestedDynamicArray<TElement>()
+            : throw WrongKind(nameof(AsNestedDynamicArray));
+    }
+
+    /// <summary>Reads the value as a defensive copy of the original nested string dynamic array.</summary>
+    public string?[][] AsNestedStringArray() =>
+        Kind == UmkaValueKind.DynamicArray
+            ? _structuredValue!.GetNestedStringArray()
+            : throw WrongKind(nameof(AsNestedStringArray));
+
     /// <summary>Tries to read the value as a defensive copy of the original fixed-layout static array type.</summary>
     public bool TryAsStaticArray<TElement>([NotNullWhen(true)] out TElement[]? value) where TElement : struct
     {
         try
         {
             value = AsStaticArray<TElement>();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (ArgumentException)
+        {
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>Tries to read the value as a defensive copy of the original dynamic array type.</summary>
+    public bool TryAsDynamicArray<TElement>([NotNullWhen(true)] out TElement[]? value) where TElement : struct
+    {
+        try
+        {
+            value = AsDynamicArray<TElement>();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (ArgumentException)
+        {
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>Tries to read the value as a defensive copy of the original string dynamic array.</summary>
+    public bool TryAsStringArray([NotNullWhen(true)] out string?[]? value)
+    {
+        try
+        {
+            value = AsStringArray();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (ArgumentException)
+        {
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>Tries to read the value as a defensive copy of the original nested dynamic array type.</summary>
+    public bool TryAsNestedDynamicArray<TElement>([NotNullWhen(true)] out TElement[][]? value) where TElement : struct
+    {
+        try
+        {
+            value = AsNestedDynamicArray<TElement>();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (ArgumentException)
+        {
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>Tries to read the value as a defensive copy of the original nested string dynamic array.</summary>
+    public bool TryAsNestedStringArray([NotNullWhen(true)] out string?[][]? value)
+    {
+        try
+        {
+            value = AsNestedStringArray();
             return true;
         }
         catch (InvalidOperationException)
@@ -500,7 +861,8 @@ public readonly struct UmkaValue
                 ? "UmkaValue(String: null)"
                 : $"UmkaValue(String: \"{EscapeString(_stringValue)}\")",
             UmkaValueKind.Pointer => $"UmkaValue(Pointer: {FormatPointer(_pointerValue)})",
-            UmkaValueKind.StaticArray or UmkaValueKind.Struct => _structuredValue?.ToString() ?? $"UmkaValue({Kind})",
+            UmkaValueKind.WeakPointer => $"UmkaValue(WeakPointer: 0x{_uint64Value:x})",
+            UmkaValueKind.StaticArray or UmkaValueKind.Struct or UmkaValueKind.DynamicArray => _structuredValue?.ToString() ?? $"UmkaValue({Kind})",
             _ => $"UmkaValue({Kind})"
         };
 
@@ -508,12 +870,40 @@ public readonly struct UmkaValue
 
     internal int StructuredLength => _structuredValue?.Length ?? throw WrongKind(nameof(StructuredLength));
 
+    internal int StructuredElementSize => _structuredValue?.ElementSize ?? throw WrongKind(nameof(StructuredElementSize));
+
+    internal bool IsStringDynamicArray =>
+        Kind == UmkaValueKind.DynamicArray && _structuredValue?.IsStringArray == true;
+
+    internal bool IsNestedDynamicArray =>
+        Kind == UmkaValueKind.DynamicArray && _structuredValue?.IsNestedArray == true;
+
+    internal bool IsNestedStringDynamicArray =>
+        Kind == UmkaValueKind.DynamicArray && _structuredValue?.IsNestedStringArray == true;
+
+    internal string?[] GetStringDynamicArray() =>
+        IsStringDynamicArray ? _structuredValue!.GetStringArray() : throw WrongKind(nameof(GetStringDynamicArray));
+
+    internal int[] GetNestedDynamicArrayRowLengths() =>
+        IsNestedDynamicArray ? _structuredValue!.GetNestedRowLengths() : throw WrongKind(nameof(GetNestedDynamicArrayRowLengths));
+
+    internal string?[] GetFlattenedNestedStringDynamicArray() =>
+        IsNestedStringDynamicArray ? _structuredValue!.GetFlattenedNestedStringArray() : throw WrongKind(nameof(GetFlattenedNestedStringDynamicArray));
+
     internal void CopyStructuredTo(IntPtr destination)
     {
         if (_structuredValue is null)
             throw WrongKind(nameof(CopyStructuredTo));
 
         _structuredValue.CopyTo(destination);
+    }
+
+    internal void CopyNestedDynamicArrayElementsTo(IntPtr destination)
+    {
+        if (!IsNestedDynamicArray)
+            throw WrongKind(nameof(CopyNestedDynamicArrayElementsTo));
+
+        _structuredValue!.CopyNestedElementsTo(destination);
     }
 
     private static void ValidateNoManagedReferences<T>(string parameterName) where T : struct
@@ -574,23 +964,51 @@ public readonly struct UmkaValue
     {
         private readonly object _value;
         private readonly int _elementSize;
+        private readonly bool _rawBytes;
+        private readonly bool _stringArray;
+        private readonly bool _nestedArray;
+        private readonly bool _nestedStringArray;
 
-        private StructuredValue(UmkaValueKind kind, object value, int size, int length, int elementSize)
+        private StructuredValue(
+            UmkaValueKind kind,
+            object value,
+            int size,
+            int length,
+            int elementSize,
+            bool rawBytes = false,
+            bool stringArray = false,
+            bool nestedArray = false,
+            bool nestedStringArray = false)
         {
             Kind = kind;
             _value = value;
             Size = size;
             Length = length;
             _elementSize = elementSize;
+            _rawBytes = rawBytes;
+            _stringArray = stringArray;
+            _nestedArray = nestedArray;
+            _nestedStringArray = nestedStringArray;
         }
 
         public UmkaValueKind Kind { get; }
 
-        public object Value => _value is Array array ? array.Clone() : _value;
+        public object Value =>
+            _value is Array array
+                ? _nestedArray ? CloneNestedArray(array) : array.Clone()
+                : _value;
 
         public int Size { get; }
 
         public int Length { get; }
+
+        public int ElementSize => _elementSize;
+
+        public bool IsStringArray => _stringArray;
+
+        public bool IsNestedArray => _nestedArray;
+
+        public bool IsNestedStringArray => _nestedStringArray;
 
         public static StructuredValue CreateStruct<T>(T value, int size) where T : struct =>
             new(UmkaValueKind.Struct, value, size, length: 1, elementSize: size);
@@ -607,6 +1025,93 @@ public readonly struct UmkaValue
                 elementSize);
         }
 
+        public static StructuredValue CreateDynamicArray<TElement>(ReadOnlySpan<TElement> values, int elementSize)
+            where TElement : struct
+        {
+            var copy = values.ToArray();
+            return new(
+                UmkaValueKind.DynamicArray,
+                copy,
+                checked(elementSize * copy.Length),
+                copy.Length,
+                elementSize);
+        }
+
+        public static StructuredValue CreateStringDynamicArray(ReadOnlySpan<string?> values)
+        {
+            var copy = values.ToArray();
+            for (var i = 0; i < copy.Length; i++)
+                UmkaStringValidation.ThrowIfContainsNullCharacter(copy[i], nameof(values));
+
+            return new(
+                UmkaValueKind.DynamicArray,
+                copy,
+                checked(IntPtr.Size * copy.Length),
+                copy.Length,
+                IntPtr.Size,
+                stringArray: true);
+        }
+
+        public static StructuredValue CreateNestedDynamicArray<TElement>(ReadOnlySpan<TElement[]> values, int elementSize)
+            where TElement : struct
+        {
+            var copy = new TElement[values.Length][];
+            var totalLength = 0;
+            for (var i = 0; i < values.Length; i++)
+            {
+                if (values[i] is null)
+                    throw new ArgumentException("Nested dynamic-array rows cannot be null.", nameof(values));
+
+                copy[i] = values[i].ToArray();
+                totalLength = checked(totalLength + copy[i].Length);
+            }
+
+            return new(
+                UmkaValueKind.DynamicArray,
+                copy,
+                checked(elementSize * totalLength),
+                copy.Length,
+                elementSize,
+                nestedArray: true);
+        }
+
+        public static StructuredValue CreateNestedStringDynamicArray(ReadOnlySpan<string?[]> values)
+        {
+            var copy = new string?[values.Length][];
+            var totalLength = 0;
+            for (var i = 0; i < values.Length; i++)
+            {
+                if (values[i] is null)
+                    throw new ArgumentException("Nested dynamic-array rows cannot be null.", nameof(values));
+
+                copy[i] = values[i].ToArray();
+                totalLength = checked(totalLength + copy[i].Length);
+                for (var j = 0; j < copy[i].Length; j++)
+                    UmkaStringValidation.ThrowIfContainsNullCharacter(copy[i][j], nameof(values));
+            }
+
+            return new(
+                UmkaValueKind.DynamicArray,
+                copy,
+                checked(IntPtr.Size * totalLength),
+                copy.Length,
+                IntPtr.Size,
+                nestedArray: true,
+                nestedStringArray: true);
+        }
+
+        public static StructuredValue CreateRawDynamicArray(byte[] bytes, int length, int elementSize)
+        {
+            var copy = bytes.ToArray();
+            return new(
+                UmkaValueKind.DynamicArray,
+                copy,
+                copy.Length,
+                length,
+                elementSize,
+                rawBytes: true);
+        }
+
         public T GetStruct<T>() where T : struct =>
             _value is T typed
                 ? typed
@@ -619,9 +1124,77 @@ public readonly struct UmkaValue
                 : throw new InvalidOperationException(
                     $"Static array value stores managed type {_value.GetType().FullName} and cannot be read as {typeof(TElement[]).FullName}.");
 
+        public TElement[] GetDynamicArray<TElement>() where TElement : struct =>
+            _value is TElement[] typed
+                ? typed.ToArray()
+                : throw new InvalidOperationException(
+                    $"Dynamic array value stores managed type {_value.GetType().FullName} and cannot be read as {typeof(TElement[]).FullName}.");
+
+        public string?[] GetStringArray() =>
+            _value is string?[] typed
+                ? typed.ToArray()
+                : throw new InvalidOperationException(
+                    $"Dynamic array value stores managed type {_value.GetType().FullName} and cannot be read as {typeof(string[]).FullName}.");
+
+        public TElement[][] GetNestedDynamicArray<TElement>() where TElement : struct =>
+            _value is TElement[][] typed
+                ? CloneNestedArray(typed)
+                : throw new InvalidOperationException(
+                    $"Nested dynamic array value stores managed type {_value.GetType().FullName} and cannot be read as {typeof(TElement[][]).FullName}.");
+
+        public string?[][] GetNestedStringArray() =>
+            _value is string?[][] typed
+                ? CloneNestedArray(typed)
+                : throw new InvalidOperationException(
+                    $"Nested dynamic array value stores managed type {_value.GetType().FullName} and cannot be read as {typeof(string[][]).FullName}.");
+
+        public int[] GetNestedRowLengths()
+        {
+            if (!_nestedArray || _value is not Array rows)
+                throw new InvalidOperationException("Value is not a nested dynamic array.");
+
+            var lengths = new int[rows.Length];
+            for (var i = 0; i < rows.Length; i++)
+                lengths[i] = ((Array)rows.GetValue(i)!).Length;
+
+            return lengths;
+        }
+
+        public string?[] GetFlattenedNestedStringArray()
+        {
+            if (!_nestedStringArray || _value is not string?[][] rows)
+                throw new InvalidOperationException("Value is not a nested string dynamic array.");
+
+            var totalLength = 0;
+            for (var i = 0; i < rows.Length; i++)
+                totalLength = checked(totalLength + rows[i].Length);
+
+            var result = new string?[totalLength];
+            var offset = 0;
+            for (var i = 0; i < rows.Length; i++)
+            {
+                Array.Copy(rows[i], 0, result, offset, rows[i].Length);
+                offset += rows[i].Length;
+            }
+
+            return result;
+        }
+
         public void CopyTo(IntPtr destination)
         {
-            if (Kind == UmkaValueKind.StaticArray)
+            if (_nestedArray)
+                throw new InvalidOperationException("Nested dynamic array values cannot be copied as unmanaged bytes.");
+
+            if (_stringArray)
+                throw new InvalidOperationException("String dynamic array values cannot be copied as unmanaged bytes.");
+
+            if (_rawBytes)
+            {
+                Marshal.Copy((byte[])_value, 0, destination, Size);
+                return;
+            }
+
+            if (Kind is UmkaValueKind.StaticArray or UmkaValueKind.DynamicArray)
             {
                 var values = (Array)_value;
                 for (var i = 0; i < values.Length; i++)
@@ -632,9 +1205,55 @@ public readonly struct UmkaValue
             Marshal.StructureToPtr(_value, destination, fDeleteOld: false);
         }
 
+        public void CopyNestedElementsTo(IntPtr destination)
+        {
+            if (!_nestedArray || _nestedStringArray)
+                throw new InvalidOperationException("Value is not a fixed-layout nested dynamic array.");
+
+            var rows = (Array)_value;
+            var offset = 0;
+            for (var rowIndex = 0; rowIndex < rows.Length; rowIndex++)
+            {
+                var row = (Array)rows.GetValue(rowIndex)!;
+                for (var elementIndex = 0; elementIndex < row.Length; elementIndex++)
+                {
+                    Marshal.StructureToPtr(
+                        row.GetValue(elementIndex)!,
+                        IntPtr.Add(destination, offset),
+                        fDeleteOld: false);
+                    offset += _elementSize;
+                }
+            }
+        }
+
         public override string ToString() =>
-            Kind == UmkaValueKind.StaticArray
-                ? $"UmkaValue(StaticArray: Length={Length}, Size={Size})"
-                : $"UmkaValue(Struct: Size={Size})";
+            Kind switch
+            {
+                UmkaValueKind.StaticArray => $"UmkaValue(StaticArray: Length={Length}, Size={Size})",
+                UmkaValueKind.DynamicArray when _nestedArray => $"UmkaValue(NestedDynamicArray: Length={Length}, Size={Size})",
+                UmkaValueKind.DynamicArray => $"UmkaValue(DynamicArray: Length={Length}, Size={Size})",
+                _ => $"UmkaValue(Struct: Size={Size})"
+            };
+
+        private static Array CloneNestedArray(Array array)
+        {
+            var clone = (Array)array.Clone();
+            for (var i = 0; i < clone.Length; i++)
+            {
+                if (clone.GetValue(i) is Array row)
+                    clone.SetValue(row.Clone(), i);
+            }
+
+            return clone;
+        }
+
+        private static TElement[][] CloneNestedArray<TElement>(TElement[][] values)
+        {
+            var copy = new TElement[values.Length][];
+            for (var i = 0; i < values.Length; i++)
+                copy[i] = values[i].ToArray();
+
+            return copy;
+        }
     }
 }

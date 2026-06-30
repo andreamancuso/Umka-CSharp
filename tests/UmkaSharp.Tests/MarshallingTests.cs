@@ -220,6 +220,44 @@ public sealed class MarshallingTests
     }
 
     [Fact]
+    public void UmkaValue_dynamic_array_values_are_defensively_copied()
+    {
+        var source = new[] { 1L, 2L, 3L };
+        var value = UmkaValue.FromDynamicArray(source);
+        var spanSource = new[] { 0L, 1L, 2L, 3L, 4L };
+        var spanValue = UmkaValue.FromDynamicArray(spanSource.AsSpan(1, 3));
+        var nestedSource = new[] { new[] { 1L, 2L }, Array.Empty<long>(), new[] { 3L } };
+        var nestedValue = UmkaValue.FromNestedDynamicArray(nestedSource);
+        var nestedStringSource = new[] { new string?[] { "a", null }, Array.Empty<string?>(), new string?[] { "b" } };
+        var nestedStringValue = UmkaValue.FromNestedDynamicArray(nestedStringSource);
+
+        source[0] = 99L;
+        spanSource[2] = 99L;
+        nestedSource[0][0] = 99L;
+        nestedStringSource[0][0] = "mutated";
+        var firstRead = Assert.IsType<long[]>(value.Value);
+        var firstNestedRead = Assert.IsType<long[][]>(nestedValue.Value);
+        var firstNestedStringRead = Assert.IsType<string?[][]>(nestedStringValue.Value);
+        AssertStaticArraySnapshot(firstRead);
+        AssertStaticArraySnapshot(spanValue.AsDynamicArray<long>());
+        AssertNestedArraySnapshot(firstNestedRead);
+        AssertNestedStringArraySnapshot(firstNestedStringRead);
+
+        firstRead[1] = 99L;
+        firstNestedRead[0][1] = 99L;
+        firstNestedStringRead[2][0] = "mutated";
+        var secondRead = Assert.IsType<long[]>(value.Value);
+        var secondNestedRead = Assert.IsType<long[][]>(nestedValue.Value);
+        var secondNestedStringRead = Assert.IsType<string?[][]>(nestedStringValue.Value);
+
+        Assert.Equal(UmkaValueKind.DynamicArray, value.Kind);
+        Assert.Equal(UmkaValueKind.DynamicArray, nestedValue.Kind);
+        AssertStaticArraySnapshot(secondRead);
+        AssertNestedArraySnapshot(secondNestedRead);
+        AssertNestedStringArraySnapshot(secondNestedStringRead);
+    }
+
+    [Fact]
     public void UmkaValue_try_creates_structured_values()
     {
         var pair = new IntPair { X = 19, Y = 23 };
@@ -237,19 +275,49 @@ public sealed class MarshallingTests
         Assert.True(UmkaValue.TryFromStaticArray(spanSource.AsSpan(1, 3), out var spanValue));
         AssertStaticArraySnapshot(spanValue.AsStaticArray<long>());
 
+        Assert.True(UmkaValue.TryFromDynamicArray(source, out var dynamicArrayValue));
+        Assert.Equal(UmkaValueKind.DynamicArray, dynamicArrayValue.Kind);
+        AssertStaticArraySnapshot(dynamicArrayValue.AsDynamicArray<long>());
+
+        Assert.True(UmkaValue.TryFromDynamicArray(spanSource.AsSpan(1, 3), out var dynamicSpanValue));
+        AssertStaticArraySnapshot(dynamicSpanValue.AsDynamicArray<long>());
+        var nestedSource = new[] { new[] { 1L, 2L }, Array.Empty<long>(), new[] { 3L } };
+        var nestedStringSource = new[] { new string?[] { "a", null }, Array.Empty<string?>(), new string?[] { "b" } };
+        Assert.True(UmkaValue.TryFromNestedDynamicArray(nestedSource, out var nestedArrayValue));
+        AssertNestedArraySnapshot(nestedArrayValue.AsNestedDynamicArray<long>());
+        Assert.True(UmkaValue.TryFromNestedDynamicArray(nestedStringSource, out var nestedStringArrayValue));
+        AssertNestedStringArraySnapshot(nestedStringArrayValue.AsNestedStringArray());
+
         source[0] = 99L;
         spanSource[2] = 99L;
+        nestedSource[0][0] = 99L;
         AssertStaticArraySnapshot(arrayValue.AsStaticArray<long>());
         AssertStaticArraySnapshot(spanValue.AsStaticArray<long>());
+        AssertStaticArraySnapshot(dynamicArrayValue.AsDynamicArray<long>());
+        AssertStaticArraySnapshot(dynamicSpanValue.AsDynamicArray<long>());
+        AssertNestedArraySnapshot(nestedArrayValue.AsNestedDynamicArray<long>());
 
         Assert.False(UmkaValue.TryFromStaticArray<long>(null, out var nullArray));
         Assert.Equal(UmkaValueKind.Void, nullArray.Kind);
+        Assert.False(UmkaValue.TryFromDynamicArray<long>(null, out var nullDynamicArray));
+        Assert.Equal(UmkaValueKind.Void, nullDynamicArray.Kind);
+        Assert.False(UmkaValue.TryFromNestedDynamicArray<long>(null, out var nullNestedDynamicArray));
+        Assert.Equal(UmkaValueKind.Void, nullNestedDynamicArray.Kind);
 
         Assert.False(UmkaValue.TryFromStruct(new ManagedStringBox { Value = "text" }, out var managedStruct));
         Assert.Equal(UmkaValueKind.Void, managedStruct.Kind);
 
         Assert.False(UmkaValue.TryFromStaticArray(new[] { new ManagedStringBox { Value = "text" } }, out var managedArray));
         Assert.Equal(UmkaValueKind.Void, managedArray.Kind);
+        Assert.False(UmkaValue.TryFromDynamicArray(new[] { new ManagedStringBox { Value = "text" } }, out var managedDynamicArray));
+        Assert.Equal(UmkaValueKind.Void, managedDynamicArray.Kind);
+        var managedNestedSource = new[] { new[] { new ManagedStringBox { Value = "text" } } };
+        Assert.False(UmkaValue.TryFromNestedDynamicArray(managedNestedSource, out var managedNestedDynamicArray));
+        Assert.Equal(UmkaValueKind.Void, managedNestedDynamicArray.Kind);
+        var nullRowSource = new long[1][];
+        nullRowSource[0] = null!;
+        Assert.False(UmkaValue.TryFromNestedDynamicArray(nullRowSource, out var nullRowNestedArray));
+        Assert.Equal(UmkaValueKind.Void, nullRowNestedArray.Kind);
     }
 
     [Fact]
@@ -258,9 +326,19 @@ public sealed class MarshallingTests
         var pair = new IntPair { X = 19, Y = 23 };
         var structValue = UmkaValue.FromStruct(pair);
         var arrayValue = UmkaValue.FromStaticArray(1L, 2L, 3L);
+        var dynamicArrayValue = UmkaValue.FromDynamicArray(1L, 2L, 3L);
+        var stringArrayValue = UmkaValue.FromDynamicArray("a", null, "b");
+        var nestedSource = new[] { new[] { 1L, 2L }, Array.Empty<long>(), new[] { 3L } };
+        var nestedStringSource = new[] { new string?[] { "a", null }, Array.Empty<string?>(), new string?[] { "b" } };
+        var nestedArrayValue = UmkaValue.FromNestedDynamicArray(nestedSource);
+        var nestedStringArrayValue = UmkaValue.FromNestedDynamicArray(nestedStringSource);
 
         Assert.Equal(pair, structValue.AsStruct<IntPair>());
         AssertStaticArraySnapshot(arrayValue.AsStaticArray<long>());
+        AssertStaticArraySnapshot(dynamicArrayValue.AsDynamicArray<long>());
+        AssertStringArraySnapshot(stringArrayValue.AsStringArray());
+        AssertNestedArraySnapshot(nestedArrayValue.AsNestedDynamicArray<long>());
+        AssertNestedStringArraySnapshot(nestedStringArrayValue.AsNestedStringArray());
 
         Assert.True(structValue.TryAsStruct<IntPair>(out var tryPair));
         Assert.Equal(pair, tryPair);
@@ -268,6 +346,18 @@ public sealed class MarshallingTests
         Assert.True(arrayValue.TryAsStaticArray<long>(out var tryArray));
         Assert.NotNull(tryArray);
         AssertStaticArraySnapshot(tryArray);
+        Assert.True(dynamicArrayValue.TryAsDynamicArray<long>(out var tryDynamicArray));
+        Assert.NotNull(tryDynamicArray);
+        AssertStaticArraySnapshot(tryDynamicArray);
+        Assert.True(stringArrayValue.TryAsStringArray(out var tryStringArray));
+        Assert.NotNull(tryStringArray);
+        AssertStringArraySnapshot(tryStringArray);
+        Assert.True(nestedArrayValue.TryAsNestedDynamicArray<long>(out var tryNestedArray));
+        Assert.NotNull(tryNestedArray);
+        AssertNestedArraySnapshot(tryNestedArray);
+        Assert.True(nestedStringArrayValue.TryAsNestedStringArray(out var tryNestedStringArray));
+        Assert.NotNull(tryNestedStringArray);
+        AssertNestedStringArraySnapshot(tryNestedStringArray);
 
         var arraySnapshot = arrayValue.AsStaticArray<long>();
         arraySnapshot[0] = 99L;
@@ -275,32 +365,70 @@ public sealed class MarshallingTests
 
         tryArray[1] = 99L;
         AssertStaticArraySnapshot(arrayValue.AsStaticArray<long>());
+        tryDynamicArray[1] = 99L;
+        AssertStaticArraySnapshot(dynamicArrayValue.AsDynamicArray<long>());
+        tryStringArray[0] = "mutated";
+        AssertStringArraySnapshot(stringArrayValue.AsStringArray());
+        tryNestedArray[0][0] = 99L;
+        AssertNestedArraySnapshot(nestedArrayValue.AsNestedDynamicArray<long>());
+        tryNestedStringArray[0][0] = "mutated";
+        AssertNestedStringArraySnapshot(nestedStringArrayValue.AsNestedStringArray());
 
         Assert.False(structValue.TryAsStruct<RealPair>(out var wrongStructType));
         Assert.Equal(default, wrongStructType);
         Assert.False(structValue.TryAsStaticArray<long>(out var structAsArray));
         Assert.Null(structAsArray);
+        Assert.False(structValue.TryAsDynamicArray<long>(out var structAsDynamicArray));
+        Assert.Null(structAsDynamicArray);
         Assert.False(arrayValue.TryAsStaticArray<int>(out var wrongArrayType));
         Assert.Null(wrongArrayType);
+        Assert.False(dynamicArrayValue.TryAsDynamicArray<int>(out var wrongDynamicArrayType));
+        Assert.Null(wrongDynamicArrayType);
         Assert.False(arrayValue.TryAsStruct<IntPair>(out var arrayAsStruct));
         Assert.Equal(default, arrayAsStruct);
         Assert.False(UmkaValue.From(42).TryAsStruct<IntPair>(out var scalarAsStruct));
         Assert.Equal(default, scalarAsStruct);
         Assert.False(UmkaValue.From(42).TryAsStaticArray<long>(out var scalarAsArray));
         Assert.Null(scalarAsArray);
+        Assert.False(UmkaValue.From(42).TryAsDynamicArray<long>(out var scalarAsDynamicArray));
+        Assert.Null(scalarAsDynamicArray);
+        Assert.False(dynamicArrayValue.TryAsStringArray(out var numericDynamicArrayAsStrings));
+        Assert.Null(numericDynamicArrayAsStrings);
+        Assert.False(dynamicArrayValue.TryAsNestedDynamicArray<long>(out var flatAsNestedArray));
+        Assert.Null(flatAsNestedArray);
+        Assert.False(dynamicArrayValue.TryAsNestedStringArray(out var flatAsNestedStringArray));
+        Assert.Null(flatAsNestedStringArray);
+        Assert.False(nestedArrayValue.TryAsNestedDynamicArray<int>(out var wrongNestedArrayType));
+        Assert.Null(wrongNestedArrayType);
+        Assert.False(nestedStringArrayValue.TryAsNestedDynamicArray<IntPtr>(out var nestedStringAsPointers));
+        Assert.Null(nestedStringAsPointers);
+        Assert.False(UmkaValue.From(42).TryAsStringArray(out var scalarAsStringArray));
+        Assert.Null(scalarAsStringArray);
         Assert.False(structValue.TryAsStruct<ManagedStringBox>(out var managedStruct));
         Assert.Equal(default, managedStruct);
         Assert.False(arrayValue.TryAsStaticArray<ManagedStringBox>(out var managedArray));
         Assert.Null(managedArray);
+        Assert.False(dynamicArrayValue.TryAsDynamicArray<ManagedStringBox>(out var managedDynamicArray));
+        Assert.Null(managedDynamicArray);
 
         Assert.Throws<InvalidOperationException>(() => structValue.AsStruct<RealPair>());
         Assert.Throws<InvalidOperationException>(() => structValue.AsStaticArray<long>());
+        Assert.Throws<InvalidOperationException>(() => structValue.AsDynamicArray<long>());
         Assert.Throws<InvalidOperationException>(() => arrayValue.AsStaticArray<int>());
+        Assert.Throws<InvalidOperationException>(() => dynamicArrayValue.AsDynamicArray<int>());
         Assert.Throws<InvalidOperationException>(() => arrayValue.AsStruct<IntPair>());
         Assert.Throws<InvalidOperationException>(() => UmkaValue.From(42).AsStruct<IntPair>());
         Assert.Throws<InvalidOperationException>(() => UmkaValue.From(42).AsStaticArray<long>());
+        Assert.Throws<InvalidOperationException>(() => UmkaValue.From(42).AsDynamicArray<long>());
+        Assert.Throws<InvalidOperationException>(() => UmkaValue.From(42).AsStringArray());
+        Assert.Throws<InvalidOperationException>(() => stringArrayValue.AsDynamicArray<IntPtr>());
+        Assert.Throws<InvalidOperationException>(() => dynamicArrayValue.AsNestedDynamicArray<long>());
+        Assert.Throws<InvalidOperationException>(() => dynamicArrayValue.AsNestedStringArray());
+        Assert.Throws<InvalidOperationException>(() => nestedArrayValue.AsNestedDynamicArray<int>());
+        Assert.Throws<InvalidOperationException>(() => nestedStringArrayValue.AsNestedDynamicArray<IntPtr>());
         Assert.Throws<ArgumentException>(() => structValue.AsStruct<ManagedStringBox>());
         Assert.Throws<ArgumentException>(() => arrayValue.AsStaticArray<ManagedStringBox>());
+        Assert.Throws<ArgumentException>(() => dynamicArrayValue.AsDynamicArray<ManagedStringBox>());
     }
 
     [Fact]
@@ -308,6 +436,12 @@ public sealed class MarshallingTests
     {
         Assert.Throws<ArgumentException>(() => UmkaValue.FromStruct(new ManagedStringBox { Value = "text" }));
         Assert.Throws<ArgumentException>(() => UmkaValue.FromStaticArray(new ManagedStringBox { Value = "text" }));
+        Assert.Throws<ArgumentException>(() => UmkaValue.FromDynamicArray(new ManagedStringBox { Value = "text" }));
+        var managedNestedSource = new[] { new[] { new ManagedStringBox { Value = "text" } } };
+        Assert.Throws<ArgumentException>(() => UmkaValue.FromNestedDynamicArray(managedNestedSource));
+        var nullRowSource = new long[1][];
+        nullRowSource[0] = null!;
+        Assert.Throws<ArgumentException>(() => UmkaValue.FromNestedDynamicArray(nullRowSource));
     }
 
     [Fact]
@@ -316,6 +450,9 @@ public sealed class MarshallingTests
         var ex = Assert.Throws<ArgumentException>(() => UmkaValue.From("bad\0value"));
 
         Assert.Contains("Embedded null", ex.Message);
+        Assert.Throws<ArgumentException>(() => UmkaValue.FromDynamicArray("good", "bad\0value"));
+        var nestedStringSource = new[] { new string?[] { "good", "bad\0value" } };
+        Assert.Throws<ArgumentException>(() => UmkaValue.FromNestedDynamicArray(nestedStringSource));
     }
 
     [Fact]
@@ -330,6 +467,12 @@ public sealed class MarshallingTests
         Assert.Equal("UmkaValue(String: \"a\\nb\\\"c\")", UmkaValue.From("a\nb\"c").ToString());
         Assert.Equal("UmkaValue(Pointer: 0x1234)", UmkaValue.FromPointer(new IntPtr(0x1234)).ToString());
         Assert.Equal("UmkaValue(StaticArray: Length=3, Size=24)", UmkaValue.FromStaticArray(1L, 2L, 3L).ToString());
+        Assert.Equal("UmkaValue(DynamicArray: Length=3, Size=24)", UmkaValue.FromDynamicArray(1L, 2L, 3L).ToString());
+        Assert.Equal($"UmkaValue(DynamicArray: Length=2, Size={IntPtr.Size * 2})", UmkaValue.FromDynamicArray("a", "b").ToString());
+        var nestedSource = new[] { new[] { 1L, 2L }, Array.Empty<long>(), new[] { 3L } };
+        var nestedStringSource = new[] { new string?[] { "a", "b" }, new string?[] { "c" } };
+        Assert.Equal("UmkaValue(NestedDynamicArray: Length=3, Size=24)", UmkaValue.FromNestedDynamicArray(nestedSource).ToString());
+        Assert.Equal($"UmkaValue(NestedDynamicArray: Length=2, Size={IntPtr.Size * 3})", UmkaValue.FromNestedDynamicArray(nestedStringSource).ToString());
         Assert.Equal("UmkaValue(Struct: Size=16)", UmkaValue.FromStruct(new IntPair { X = 1, Y = 2 }).ToString());
     }
 
@@ -479,6 +622,20 @@ public sealed class MarshallingTests
         Assert.Equal(UmkaTypeKind.SignedInteger, nextColor.ResultType.Kind);
         Assert.Equal(UmkaTypeKind.UnsignedInteger, selectedMode.ResultType.Kind);
         Assert.Equal(UmkaTypeKind.UnsignedInteger, modeId.ParameterTypes[0].Kind);
+        Assert.True(nextColor.ParameterTypes[0].IsEnum);
+        Assert.True(nextColor.ResultType.IsEnum);
+        Assert.True(selectedMode.ResultType.IsEnum);
+        Assert.Collection(
+            nextColor.ParameterTypes[0].EnumMembers,
+            member => AssertEnumMember(member, "red", 0, 0),
+            member => AssertEnumMember(member, "green", 1, 1),
+            member => AssertEnumMember(member, "blue", 2, 2));
+        Assert.Contains(
+            selectedMode.ResultType.EnumMembers,
+            member => member.Name == "zero" && member.SignedValue == 0 && member.UnsignedValue == 0);
+        Assert.Contains(
+            selectedMode.ResultType.EnumMembers,
+            member => member.Name == "select" && member.SignedValue == 75 && member.UnsignedValue == 75);
 
         Assert.Equal(1, nextColor.CallInt64(UmkaValue.From(0)));
         Assert.Equal(2, nextColor.CallInt64(UmkaValue.From(1)));
@@ -496,6 +653,56 @@ public sealed class MarshallingTests
         Assert.Equal(default, wrongStorageColor);
         Assert.Throws<InvalidOperationException>(() => selectedMode.CallEnum<HostColor>());
         Assert.Throws<ArgumentOutOfRangeException>(() => modeId.CallByte(UmkaValue.From(256UL)));
+    }
+
+    [Fact]
+    public void Callback_frame_exposes_enum_member_metadata()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            type Status = enum (uint8) {
+                ok = 10
+                fail = 20
+            }
+
+            fn inspect*(value: Status): Status
+
+            fn run*(): Status {
+                return inspect(.fail)
+            }
+            """);
+
+        UmkaTypeInfo? argumentType = null;
+        UmkaTypeInfo? resultType = null;
+
+        runtime.Register("inspect", frame =>
+        {
+            argumentType = frame.ParameterTypes[0];
+            resultType = frame.ResultType;
+            return UmkaValue.From((byte)10);
+        });
+
+        runtime.Compile();
+
+        Assert.Equal((byte)10, runtime.GetFunction("run").CallByte());
+
+        Assert.NotNull(argumentType);
+        Assert.NotNull(resultType);
+        Assert.Equal(UmkaTypeKind.UnsignedInteger, argumentType.Kind);
+        Assert.True(argumentType.IsEnum);
+        Assert.Equal(UmkaTypeKind.UnsignedInteger, resultType.Kind);
+        Assert.True(resultType.IsEnum);
+        Assert.Collection(
+            argumentType.EnumMembers,
+            member => AssertEnumMember(member, "ok", 10, 10),
+            member => AssertEnumMember(member, "fail", 20, 20),
+            member => AssertEnumMember(member, "zero", 0, 0));
+        Assert.Collection(
+            resultType.EnumMembers,
+            member => AssertEnumMember(member, "ok", 10, 10),
+            member => AssertEnumMember(member, "fail", 20, 20),
+            member => AssertEnumMember(member, "zero", 0, 0));
     }
 
     [Fact]
@@ -1001,6 +1208,304 @@ public sealed class MarshallingTests
     }
 
     [Fact]
+    public void Function_marshals_dynamic_array_arguments_and_results()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            fn sum*(values: []int): int {
+                total := 0
+                for _, value in values {
+                    total += value
+                }
+                return total
+            }
+
+            fn joinText*(values: []str): str {
+                result := ""
+                for _, value in values {
+                    result += value
+                }
+                return result
+            }
+
+            fn values*(): []int {
+                return []int{5, 7, 11}
+            }
+
+            fn echoText*(values: []str): []str {
+                return values
+            }
+
+            fn textValues*(): []str {
+                return []str{"a", "b"}
+            }
+
+            fn anyLength*(values: []any): int {
+                return len(values)
+            }
+
+            fn anyValues*(): []any {
+                return []any{42}
+            }
+            """);
+
+        runtime.Compile();
+
+        var sum = runtime.GetFunction("sum");
+        var joinText = runtime.GetFunction("joinText");
+        var values = runtime.GetFunction("values");
+        var echoText = runtime.GetFunction("echoText");
+        var textValues = runtime.GetFunction("textValues");
+        var anyLength = runtime.GetFunction("anyLength");
+        var anyValues = runtime.GetFunction("anyValues");
+        var parameterType = Assert.Single(sum.ParameterTypes);
+        var textParameterType = Assert.Single(joinText.ParameterTypes);
+
+        Assert.Equal(UmkaTypeKind.DynamicArray, parameterType.Kind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, parameterType.ElementKind);
+        Assert.Equal("int", parameterType.ElementTypeName);
+        Assert.Equal(8, parameterType.ElementNativeSize);
+        Assert.False(parameterType.ElementHasReferences);
+        Assert.False(parameterType.IsDeferred);
+        Assert.True(sum.CanCallWith(UmkaValue.FromDynamicArray(10L, 14L, 18L)));
+        Assert.False(sum.CanCallWith(UmkaValue.FromStaticArray(10L, 14L, 18L)));
+        Assert.Equal(42, sum.CallInt64(UmkaValue.FromDynamicArray(10L, 14L, 18L)));
+        Assert.Equal(0, sum.CallInt64(UmkaValue.FromDynamicArray<long>()));
+
+        Assert.Equal(UmkaTypeKind.DynamicArray, textParameterType.Kind);
+        Assert.Equal(UmkaTypeKind.String, textParameterType.ElementKind);
+        Assert.True(textParameterType.ElementHasReferences);
+        Assert.True(textParameterType.CanReadAsStringArray());
+        Assert.False(textParameterType.IsDeferred);
+        Assert.True(joinText.CanCallWith(UmkaValue.FromDynamicArray("um", "ka")));
+        Assert.False(joinText.CanCallWith(UmkaValue.FromDynamicArray(10L, 14L)));
+        Assert.Equal("umka", joinText.CallString(UmkaValue.FromDynamicArray("um", "ka")));
+
+        Assert.True(values.CanReadResultAsDynamicArray<long>());
+        Assert.Collection(
+            values.CallDynamicArray<long>(),
+            value => Assert.Equal(5L, value),
+            value => Assert.Equal(7L, value),
+            value => Assert.Equal(11L, value));
+        Assert.True(values.TryCallDynamicArray<long>(out var tryValues));
+        Assert.NotNull(tryValues);
+        Assert.Collection(
+            tryValues,
+            value => Assert.Equal(5L, value),
+            value => Assert.Equal(7L, value),
+            value => Assert.Equal(11L, value));
+        Assert.False(values.TryCallDynamicArray<int>(out var wrongElementSize));
+        Assert.Null(wrongElementSize);
+        Assert.Throws<InvalidOperationException>(() => values.CallDynamicArray<int>());
+
+        Assert.Equal(UmkaTypeKind.String, textValues.ResultType.ElementKind);
+        Assert.True(textValues.ResultType.ElementHasReferences);
+        Assert.True(textValues.CanReadResultAsStringArray());
+        Assert.False(textValues.CanReadResultAsDynamicArray<IntPtr>());
+        Assert.Collection(
+            textValues.CallStringArray(),
+            value => Assert.Equal("a", value),
+            value => Assert.Equal("b", value));
+        Assert.True(textValues.TryCallStringArray(out var tryTextValues));
+        Assert.NotNull(tryTextValues);
+        Assert.Collection(
+            tryTextValues,
+            value => Assert.Equal("a", value),
+            value => Assert.Equal("b", value));
+        Assert.Collection(
+            echoText.CallStringArray(UmkaValue.FromDynamicArray("left", "right")),
+            value => Assert.Equal("left", value),
+            value => Assert.Equal("right", value));
+        var ex = Assert.Throws<InvalidOperationException>(() => textValues.CallDynamicArray<IntPtr>());
+        Assert.Contains("contains Umka-managed references", ex.Message);
+
+        var anyParameterType = Assert.Single(anyLength.ParameterTypes);
+        Assert.Equal(UmkaTypeKind.DynamicArray, anyParameterType.Kind);
+        Assert.Equal(UmkaTypeKind.Interface, anyParameterType.ElementKind);
+        Assert.True(anyParameterType.ElementHasReferences);
+        Assert.True(anyParameterType.IsDeferred);
+        Assert.False(anyLength.CanCallWith(UmkaValue.FromDynamicArray(1L)));
+        var anyArgEx = Assert.Throws<ArgumentException>(() => anyLength.CallInt64(UmkaValue.FromDynamicArray(1L)));
+        Assert.Contains("element type", anyArgEx.Message);
+        Assert.Contains("contains Umka-managed references", anyArgEx.Message);
+
+        Assert.Equal(UmkaTypeKind.DynamicArray, anyValues.ResultType.Kind);
+        Assert.Equal(UmkaTypeKind.Interface, anyValues.ResultType.ElementKind);
+        Assert.True(anyValues.ResultType.ElementHasReferences);
+        Assert.True(anyValues.ResultType.IsDeferred);
+        Assert.False(anyValues.CanReadResultAsDynamicArray<IntPtr>());
+        Assert.False(anyValues.TryCallDynamicArray<IntPtr>(out var anyResult));
+        Assert.Null(anyResult);
+        var anyResultEx = Assert.Throws<InvalidOperationException>(() => anyValues.CallDynamicArray<IntPtr>());
+        Assert.Contains("element type", anyResultEx.Message);
+        Assert.Contains("contains Umka-managed references", anyResultEx.Message);
+    }
+
+    [Fact]
+    public void Function_marshals_nested_dynamic_array_arguments()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            fn sumMatrix*(values: [][]int): int {
+                total := 0
+                for _, row in values {
+                    for _, value in row {
+                        total += value
+                    }
+                }
+                return total
+            }
+
+            fn textLength*(values: [][]str): int {
+                total := 0
+                for _, row in values {
+                    for _, value in row {
+                        total += len(value)
+                    }
+                }
+                return total
+            }
+
+            fn anyMatrixLength*(values: [][]any): int {
+                return len(values)
+            }
+            """);
+
+        runtime.Compile();
+        var sumMatrix = runtime.GetFunction("sumMatrix");
+        var textLength = runtime.GetFunction("textLength");
+        var anyMatrixLength = runtime.GetFunction("anyMatrixLength");
+        var matrixRows = new[] { new[] { 10L, 14L }, Array.Empty<long>(), new[] { 18L } };
+        var wrongMatrixRows = new[] { new[] { 1, 2 } };
+        var emptyMatrixRows = new[] { Array.Empty<long>() };
+        var textMatrixRows = new[] { new string?[] { "um", "ka" }, Array.Empty<string?>(), new string?[] { "sharp" } };
+        var matrixValue = UmkaValue.FromNestedDynamicArray(matrixRows);
+        var textMatrixValue = UmkaValue.FromNestedDynamicArray(textMatrixRows);
+
+        var matrixType = Assert.Single(sumMatrix.ParameterTypes);
+        Assert.Equal(UmkaTypeKind.DynamicArray, matrixType.Kind);
+        Assert.Equal(UmkaTypeKind.DynamicArray, matrixType.ElementKind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, matrixType.NestedElementKind);
+        Assert.Equal(8, matrixType.NestedElementNativeSize);
+        Assert.False(matrixType.NestedElementHasReferences);
+        Assert.True(sumMatrix.CanCallWith(matrixValue));
+        Assert.False(sumMatrix.CanCallWith(UmkaValue.FromDynamicArray(10L, 14L, 18L)));
+        Assert.False(sumMatrix.CanCallWith(UmkaValue.FromNestedDynamicArray(wrongMatrixRows)));
+        Assert.Equal(42, sumMatrix.CallInt64(matrixValue));
+        Assert.Equal(0, sumMatrix.CallInt64(UmkaValue.FromNestedDynamicArray(emptyMatrixRows)));
+
+        var textMatrixType = Assert.Single(textLength.ParameterTypes);
+        Assert.Equal(UmkaTypeKind.DynamicArray, textMatrixType.ElementKind);
+        Assert.Equal(UmkaTypeKind.String, textMatrixType.NestedElementKind);
+        Assert.True(textMatrixType.NestedElementHasReferences);
+        Assert.True(textMatrixType.CanReadAsNestedStringArray());
+        Assert.True(textLength.CanCallWith(textMatrixValue));
+        Assert.False(textLength.CanCallWith(matrixValue));
+        Assert.Equal(9, textLength.CallInt64(textMatrixValue));
+
+        var anyMatrixType = Assert.Single(anyMatrixLength.ParameterTypes);
+        Assert.Equal(UmkaTypeKind.Interface, anyMatrixType.NestedElementKind);
+        Assert.True(anyMatrixType.NestedElementHasReferences);
+        Assert.False(anyMatrixLength.CanCallWith(matrixValue));
+        Assert.False(anyMatrixLength.CanCallWith(textMatrixValue));
+        var ex = Assert.Throws<ArgumentException>(() => anyMatrixLength.CallInt64(matrixValue));
+        Assert.Contains("inner element type", ex.Message);
+    }
+
+    [Fact]
+    public void Function_copies_nested_dynamic_array_results()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            fn matrix*(): [][]int {
+                return [][]int{[]int{1, 2}, []int{}, []int{3, 4, 5}}
+            }
+
+            fn textMatrix*(): [][]str {
+                return [][]str{[]str{"a", "b"}, []str{}, []str{"c"}}
+            }
+
+            fn anyMatrix*(): [][]any {
+                return [][]any{[]any{42}}
+            }
+            """);
+
+        runtime.Compile();
+
+        var matrix = runtime.GetFunction("matrix");
+        var textMatrix = runtime.GetFunction("textMatrix");
+        var anyMatrix = runtime.GetFunction("anyMatrix");
+
+        Assert.Equal(UmkaTypeKind.DynamicArray, matrix.ResultType.Kind);
+        Assert.Equal(UmkaTypeKind.DynamicArray, matrix.ResultType.ElementKind);
+        Assert.Equal("[]int", matrix.ResultType.ElementTypeName);
+        Assert.True(matrix.ResultType.ElementHasReferences);
+        Assert.Equal(UmkaTypeKind.SignedInteger, matrix.ResultType.NestedElementKind);
+        Assert.Equal("int", matrix.ResultType.NestedElementTypeName);
+        Assert.Equal(8, matrix.ResultType.NestedElementNativeSize);
+        Assert.False(matrix.ResultType.NestedElementHasReferences);
+        Assert.False(matrix.ResultType.IsDeferred);
+        Assert.True(matrix.CanReadResultAsNestedDynamicArray<long>());
+        Assert.False(matrix.CanReadResultAsNestedDynamicArray<int>());
+        Assert.False(matrix.CanReadResultAsDynamicArray<IntPtr>());
+
+        var values = matrix.CallNestedDynamicArray<long>();
+        Assert.Equal(3, values.Length);
+        Assert.Equal([1L, 2L], values[0]);
+        Assert.Empty(values[1]);
+        Assert.Equal([3L, 4L, 5L], values[2]);
+        Assert.True(matrix.TryCallNestedDynamicArray<long>(out var tryValues));
+        Assert.NotNull(tryValues);
+        Assert.Equal(3, tryValues.Length);
+        Assert.Equal([1L, 2L], tryValues[0]);
+        Assert.Empty(tryValues[1]);
+        Assert.Equal([3L, 4L, 5L], tryValues[2]);
+        Assert.False(matrix.TryCallNestedDynamicArray<int>(out var wrongElementSize));
+        Assert.Null(wrongElementSize);
+
+        var wrongElementSizeEx = Assert.Throws<InvalidOperationException>(() => matrix.CallNestedDynamicArray<int>());
+        Assert.Contains("inner element type", wrongElementSizeEx.Message);
+
+        Assert.Equal(UmkaTypeKind.DynamicArray, textMatrix.ResultType.ElementKind);
+        Assert.Equal(UmkaTypeKind.String, textMatrix.ResultType.NestedElementKind);
+        Assert.Equal("str", textMatrix.ResultType.NestedElementTypeName);
+        Assert.Equal(IntPtr.Size, textMatrix.ResultType.NestedElementNativeSize);
+        Assert.True(textMatrix.ResultType.NestedElementHasReferences);
+        Assert.False(textMatrix.ResultType.IsDeferred);
+        Assert.True(textMatrix.ResultType.CanReadAsNestedStringArray());
+        Assert.True(textMatrix.CanReadResultAsNestedStringArray());
+        Assert.False(textMatrix.CanReadResultAsNestedDynamicArray<IntPtr>());
+        var textValues = textMatrix.CallNestedStringArray();
+        Assert.Equal(3, textValues.Length);
+        Assert.Collection(
+            textValues[0],
+            item => Assert.Equal("a", item),
+            item => Assert.Equal("b", item));
+        Assert.Empty(textValues[1]);
+        Assert.Collection(textValues[2], item => Assert.Equal("c", item));
+        Assert.True(textMatrix.TryCallNestedStringArray(out var tryTextValues));
+        Assert.NotNull(tryTextValues);
+        Assert.Collection(
+            tryTextValues[0],
+            item => Assert.Equal("a", item),
+            item => Assert.Equal("b", item));
+        Assert.Empty(tryTextValues[1]);
+        Assert.Collection(tryTextValues[2], item => Assert.Equal("c", item));
+
+        Assert.Equal(UmkaTypeKind.Interface, anyMatrix.ResultType.NestedElementKind);
+        Assert.True(anyMatrix.ResultType.NestedElementHasReferences);
+        Assert.True(anyMatrix.ResultType.IsDeferred);
+        Assert.False(anyMatrix.ResultType.CanReadAsNestedStringArray());
+        Assert.False(anyMatrix.TryCallNestedStringArray(out var anyValues));
+        Assert.Null(anyValues);
+        var anyEx = Assert.Throws<InvalidOperationException>(() => anyMatrix.CallNestedStringArray());
+        Assert.Contains("jagged string array", anyEx.Message);
+    }
+
+    [Fact]
     public void Function_rejects_unsupported_non_scalar_argument_kinds()
     {
         NativeTestEnvironment.RequireNativeShim();
@@ -1008,10 +1513,6 @@ public sealed class MarshallingTests
         using var runtime = UmkaRuntime.FromSource("""
             type Drawable = interface {
                 area(): real
-            }
-
-            fn takeDynamicArray*(value: []int): int {
-                return 0
             }
 
             fn takeMap*(value: map[str]int): int {
@@ -1041,26 +1542,493 @@ public sealed class MarshallingTests
 
         runtime.Compile();
 
-        AssertUnsupportedArgument(runtime.GetFunction("takeDynamicArray"), UmkaTypeKind.DynamicArray);
-        AssertUnsupportedArgument(runtime.GetFunction("takeMap"), UmkaTypeKind.Map);
-        AssertUnsupportedArgument(runtime.GetFunction("takeInterface"), UmkaTypeKind.Interface);
-        AssertUnsupportedArgument(runtime.GetFunction("takeAny"), UmkaTypeKind.Interface, "interface");
+        AssertUnsupportedArgument(
+            runtime.GetFunction("takeMap"),
+            UmkaTypeKind.Map,
+            expectedMessage: "not host-side map creation, insertion, rooting, ownership transfer, or assignment/reference-count updates");
+
+        var takeInterface = runtime.GetFunction("takeInterface");
+        AssertInterfaceMetadata(takeInterface.ParameterTypes[0], expectedItemCount: 3);
+        AssertUnsupportedArgument(takeInterface, UmkaTypeKind.Interface);
+
+        var takeAny = runtime.GetFunction("takeAny");
+        AssertAnyMetadata(takeAny.ParameterTypes[0]);
+        AssertUnsupportedArgument(takeAny, UmkaTypeKind.Interface, "interface");
+
         AssertUnsupportedArgument(runtime.GetFunction("takeClosure"), UmkaTypeKind.Closure);
-        AssertUnsupportedArgument(runtime.GetFunction("takeWeakPointer"), UmkaTypeKind.WeakPointer);
-        AssertUnsupportedArgument(runtime.GetFunction("takeFiber"), UmkaTypeKind.Fiber);
+
+        var takeFiber = runtime.GetFunction("takeFiber");
+        AssertFiberMetadata(takeFiber.ParameterTypes[0]);
+        AssertUnsupportedArgument(takeFiber, UmkaTypeKind.Fiber);
     }
 
     [Fact]
-    public void Function_exposes_unsupported_result_metadata_and_rejects_readers()
+    public void Function_roundtrips_opaque_weak_pointer_values()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            weakTarget := 42
+
+            fn weakPointer*(): weak ^int {
+                return weak ^int(&weakTarget)
+            }
+
+            fn echoWeak*(value: weak ^int): weak ^int {
+                return value
+            }
+
+            fn sameWeak*(left: weak ^int, right: weak ^int): bool {
+                return left == right
+            }
+            """);
+
+        runtime.Compile();
+        var weakPointer = runtime.GetFunction("weakPointer");
+
+        Assert.Equal(UmkaTypeKind.WeakPointer, weakPointer.ResultType.Kind);
+        Assert.False(weakPointer.ResultType.IsDeferred);
+        Assert.True(weakPointer.ResultType.CanReadAsValue());
+        Assert.True(weakPointer.ResultType.CanReadAsWeakPointer());
+        Assert.True(weakPointer.CanReadResultAsValue());
+        Assert.True(weakPointer.CanReadResultAsScalar<UmkaValue>());
+        Assert.True(weakPointer.CanReadResultAsWeakPointer());
+        Assert.False(weakPointer.CanReadResultAsScalar<ulong>());
+
+        var handle = weakPointer.CallWeakPointer();
+        Assert.NotEqual(0UL, handle);
+
+        var dynamicValue = weakPointer.CallValue();
+        Assert.Equal(UmkaValueKind.WeakPointer, dynamicValue.Kind);
+        Assert.Equal(handle, dynamicValue.AsWeakPointer());
+        Assert.True(dynamicValue.TryAsWeakPointer(out var tryDynamicHandle));
+        Assert.Equal(handle, tryDynamicHandle);
+
+        Assert.True(weakPointer.TryCallWeakPointer(out var tryHandle));
+        Assert.Equal(handle, tryHandle);
+
+        var echoWeak = runtime.GetFunction("echoWeak");
+        var value = UmkaValue.FromWeakPointer(handle);
+        Assert.Equal(UmkaValueKind.WeakPointer, value.Kind);
+        Assert.Equal(handle, value.Value);
+        Assert.Equal(handle, value.AsWeakPointer());
+        Assert.True(value.TryAsWeakPointer(out var valueHandle));
+        Assert.Equal(handle, valueHandle);
+        Assert.Contains("WeakPointer", value.ToString());
+        Assert.True(echoWeak.CanCallWith(value));
+        Assert.False(echoWeak.CanCallWith(UmkaValue.From(handle)));
+        Assert.Equal(handle, echoWeak.CallWeakPointer(value));
+
+        var sameWeak = runtime.GetFunction("sameWeak");
+        Assert.True(sameWeak.CallBoolean(value, UmkaValue.FromWeakPointer(handle)));
+    }
+
+    [Fact]
+    public void Function_marshals_fixed_layout_weak_pointer_aggregates()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            weakTarget := 42
+
+            type WeakBox = struct {
+                value: weak ^int
+            }
+
+            fn weakPointer*(): weak ^int {
+                return weak ^int(&weakTarget)
+            }
+
+            fn box*(): WeakBox {
+                return WeakBox{weak ^int(&weakTarget)}
+            }
+
+            fn sameBox*(box: WeakBox, expected: weak ^int): bool {
+                return box.value == expected
+            }
+
+            fn weakArray*(): [2]weak ^int {
+                value := weak ^int(&weakTarget)
+                return [2]weak ^int{value, value}
+            }
+
+            fn countSameArray*(values: [2]weak ^int, expected: weak ^int): int {
+                total := 0
+                for _, value in values {
+                    if value == expected {
+                        total++
+                    }
+                }
+                return total
+            }
+            """);
+
+        runtime.Compile();
+
+        var handle = runtime.GetFunction("weakPointer").CallWeakPointer();
+        var box = runtime.GetFunction("box");
+
+        Assert.Equal(UmkaTypeKind.Struct, box.ResultType.Kind);
+        Assert.Equal(Marshal.SizeOf<WeakBox>(), box.ResultType.NativeSize);
+        Assert.False(box.ResultType.HasReferences);
+        Assert.True(box.CanReadResultAsStruct<WeakBox>());
+
+        var boxValue = box.CallStruct<WeakBox>();
+        Assert.Equal(handle, boxValue.Value);
+        Assert.True(runtime.GetFunction("sameBox").CallBoolean(
+            UmkaValue.FromStruct(boxValue),
+            UmkaValue.FromWeakPointer(handle)));
+
+        var weakArray = runtime.GetFunction("weakArray");
+        Assert.Equal(UmkaTypeKind.StaticArray, weakArray.ResultType.Kind);
+        Assert.Equal(2, weakArray.ResultType.ItemCount);
+        Assert.Equal(2 * Marshal.SizeOf<ulong>(), weakArray.ResultType.NativeSize);
+        Assert.False(weakArray.ResultType.HasReferences);
+        Assert.True(weakArray.CanReadResultAsArray<ulong>(2));
+
+        var handles = weakArray.CallArray<ulong>(2);
+        Assert.Equal([handle, handle], handles);
+        Assert.Equal(2, runtime.GetFunction("countSameArray").CallInt64(
+            UmkaValue.FromStaticArray(handles),
+            UmkaValue.FromWeakPointer(handle)));
+    }
+
+    [Fact]
+    public void Function_marshals_dynamic_arrays_of_opaque_weak_pointer_handles()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            weakTarget := 42
+
+            fn weakPointer*(): weak ^int {
+                return weak ^int(&weakTarget)
+            }
+
+            fn weakValues*(): []weak ^int {
+                value := weak ^int(&weakTarget)
+                return []weak ^int{value, value}
+            }
+
+            fn countSame*(values: []weak ^int, expected: weak ^int): int {
+                total := 0
+                for _, value in values {
+                    if value == expected {
+                        total++
+                    }
+                }
+                return total
+            }
+            """);
+
+        runtime.Compile();
+
+        var handle = runtime.GetFunction("weakPointer").CallWeakPointer();
+        var weakValues = runtime.GetFunction("weakValues");
+
+        Assert.Equal(UmkaTypeKind.DynamicArray, weakValues.ResultType.Kind);
+        Assert.Equal(UmkaTypeKind.WeakPointer, weakValues.ResultType.ElementKind);
+        Assert.Equal(8, weakValues.ResultType.ElementNativeSize);
+        Assert.False(weakValues.ResultType.ElementHasReferences);
+        Assert.True(weakValues.CanReadResultAsDynamicArray<ulong>());
+
+        var values = weakValues.CallDynamicArray<ulong>();
+        Assert.Equal([handle, handle], values);
+        Assert.True(weakValues.TryCallDynamicArray<ulong>(out var tryValues));
+        Assert.NotNull(tryValues);
+        Assert.Equal([handle, handle], tryValues);
+        Assert.False(weakValues.TryCallDynamicArray<uint>(out var wrongElementSize));
+        Assert.Null(wrongElementSize);
+
+        var countSame = runtime.GetFunction("countSame");
+        var parameterType = countSame.ParameterTypes[0];
+        Assert.Equal(UmkaTypeKind.DynamicArray, parameterType.Kind);
+        Assert.Equal(UmkaTypeKind.WeakPointer, parameterType.ElementKind);
+        Assert.False(parameterType.ElementHasReferences);
+
+        var arrayValue = UmkaValue.FromDynamicArray(values);
+        Assert.True(countSame.CanCallWith(arrayValue, UmkaValue.FromWeakPointer(handle)));
+        Assert.False(countSame.CanCallWith(UmkaValue.FromDynamicArray(1U, 2U), UmkaValue.FromWeakPointer(handle)));
+        Assert.Equal(2, countSame.CallInt64(arrayValue, UmkaValue.FromWeakPointer(handle)));
+    }
+
+    [Fact]
+    public void Function_copies_reference_free_map_results()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            weakTarget := 42
+
+            fn scores*(): map[int]int {
+                return map[int]int{1: 10, 2: 20, 3: 30}
+            }
+
+            fn empty*(): map[int]int {
+                return map[int]int{}
+            }
+
+            fn weakPointer*(): weak ^int {
+                return weak ^int(&weakTarget)
+            }
+
+            fn weakKeyScores*(): map[weak ^int]int {
+                key := weak ^int(&weakTarget)
+                return map[weak ^int]int{key: 7}
+            }
+
+            fn weakValueScores*(): map[int]weak ^int {
+                value := weak ^int(&weakTarget)
+                return map[int]weak ^int{1: value}
+            }
+
+            fn textScores*(): map[str]int {
+                return map[str]int{"answer": 42}
+            }
+
+            fn labels*(): map[int]str {
+                return map[int]str{1: "one", 2: "two"}
+            }
+
+            fn aliases*(): map[str]str {
+                return map[str]str{"a": "alpha", "b": "beta"}
+            }
+
+            fn anyScores*(): map[int]any {
+                return map[int]any{1: 42}
+            }
+            """);
+
+        runtime.Compile();
+        var scores = runtime.GetFunction("scores");
+
+        Assert.Equal(UmkaTypeKind.Map, scores.ResultType.Kind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, scores.ResultType.MapKeyKind);
+        Assert.Equal("int", scores.ResultType.MapKeyTypeName);
+        Assert.Equal(8, scores.ResultType.MapKeyNativeSize);
+        Assert.False(scores.ResultType.MapKeyHasReferences);
+        Assert.Equal(UmkaTypeKind.SignedInteger, scores.ResultType.MapValueKind);
+        Assert.Equal("int", scores.ResultType.MapValueTypeName);
+        Assert.Equal(8, scores.ResultType.MapValueNativeSize);
+        Assert.False(scores.ResultType.MapValueHasReferences);
+        Assert.False(scores.ResultType.IsDeferred);
+        Assert.True(scores.CanReadResultAsMap<long, long>());
+        Assert.False(scores.CanReadResultAsMap<int, long>());
+
+        var values = scores.CallMap<long, long>();
+        Assert.Equal(3, values.Count);
+        Assert.Equal(10, values[1]);
+        Assert.Equal(20, values[2]);
+        Assert.Equal(30, values[3]);
+
+        Assert.True(scores.TryCallMap<long, long>(out var tryValues));
+        Assert.NotNull(tryValues);
+        Assert.Equal(20, tryValues[2]);
+        Assert.False(scores.TryCallMap<int, long>(out var wrongKeySize));
+        Assert.Null(wrongKeySize);
+        Assert.Throws<InvalidOperationException>(() => scores.CallMap<int, long>());
+
+        Assert.Empty(runtime.GetFunction("empty").CallMap<long, long>());
+
+        var weakHandle = runtime.GetFunction("weakPointer").CallWeakPointer();
+        var weakKeyScores = runtime.GetFunction("weakKeyScores");
+        Assert.Equal(UmkaTypeKind.WeakPointer, weakKeyScores.ResultType.MapKeyKind);
+        Assert.Equal(8, weakKeyScores.ResultType.MapKeyNativeSize);
+        Assert.False(weakKeyScores.ResultType.MapKeyHasReferences);
+        Assert.True(weakKeyScores.CanReadResultAsMap<ulong, long>());
+        var weakKeyMap = weakKeyScores.CallMap<ulong, long>();
+        Assert.Equal(7, weakKeyMap[weakHandle]);
+
+        var weakValueScores = runtime.GetFunction("weakValueScores");
+        Assert.Equal(UmkaTypeKind.WeakPointer, weakValueScores.ResultType.MapValueKind);
+        Assert.Equal(8, weakValueScores.ResultType.MapValueNativeSize);
+        Assert.False(weakValueScores.ResultType.MapValueHasReferences);
+        Assert.True(weakValueScores.CanReadResultAsMap<long, ulong>());
+        var weakValueMap = weakValueScores.CallMap<long, ulong>();
+        Assert.Equal(weakHandle, weakValueMap[1]);
+
+        var textScores = runtime.GetFunction("textScores");
+        Assert.True(textScores.ResultType.MapKeyHasReferences);
+        Assert.False(textScores.ResultType.IsDeferred);
+        Assert.False(textScores.CanReadResultAsMap<IntPtr, long>());
+        Assert.True(textScores.CanReadResultAsStringKeyMap<long>());
+        Assert.False(textScores.CanReadResultAsStringKeyMap<int>());
+        var textMap = textScores.CallStringKeyMap<long>();
+        Assert.Equal(42, textMap["answer"]);
+        Assert.True(textScores.TryCallStringKeyMap<long>(out var tryTextMap));
+        Assert.NotNull(tryTextMap);
+        Assert.Equal(42, tryTextMap["answer"]);
+        Assert.False(textScores.TryCallStringKeyMap<int>(out var wrongStringKeyValueSize));
+        Assert.Null(wrongStringKeyValueSize);
+        var ex = Assert.Throws<InvalidOperationException>(() => textScores.CallMap<IntPtr, long>());
+        Assert.Contains("key type 'str' contains Umka-managed references", ex.Message);
+
+        var labels = runtime.GetFunction("labels");
+        Assert.True(labels.ResultType.MapValueHasReferences);
+        Assert.False(labels.ResultType.IsDeferred);
+        Assert.True(labels.CanReadResultAsStringValueMap<long>());
+        var labelMap = labels.CallStringValueMap<long>();
+        Assert.Equal("one", labelMap[1]);
+        Assert.Equal("two", labelMap[2]);
+        Assert.True(labels.TryCallStringValueMap<long>(out var tryLabelMap));
+        Assert.NotNull(tryLabelMap);
+        Assert.Equal("two", tryLabelMap[2]);
+
+        var aliases = runtime.GetFunction("aliases");
+        Assert.True(aliases.ResultType.MapKeyHasReferences);
+        Assert.True(aliases.ResultType.MapValueHasReferences);
+        Assert.False(aliases.ResultType.IsDeferred);
+        Assert.True(aliases.CanReadResultAsStringMap());
+        var aliasMap = aliases.CallStringMap();
+        Assert.Equal("alpha", aliasMap["a"]);
+        Assert.Equal("beta", aliasMap["b"]);
+        Assert.True(aliases.TryCallStringMap(out var tryAliasMap));
+        Assert.NotNull(tryAliasMap);
+        Assert.Equal("beta", tryAliasMap["b"]);
+
+        var anyScores = runtime.GetFunction("anyScores");
+        Assert.Equal(UmkaTypeKind.Map, anyScores.ResultType.Kind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, anyScores.ResultType.MapKeyKind);
+        Assert.False(anyScores.ResultType.MapKeyHasReferences);
+        Assert.Equal(UmkaTypeKind.Interface, anyScores.ResultType.MapValueKind);
+        Assert.True(anyScores.ResultType.MapValueHasReferences);
+        Assert.True(anyScores.ResultType.IsDeferred);
+        Assert.False(anyScores.CanReadResultAsMap<long, IntPtr>());
+        Assert.False(anyScores.TryCallMap<long, IntPtr>(out var anyMap));
+        Assert.Null(anyMap);
+        var anyMapEx = Assert.Throws<InvalidOperationException>(() => anyScores.CallMap<long, IntPtr>());
+        Assert.Contains("value type", anyMapEx.Message);
+        Assert.Contains("contains Umka-managed references", anyMapEx.Message);
+    }
+
+    [Fact]
+    public void Function_copies_dynamic_array_value_map_results()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            fn rows*(): map[int][]int {
+                return map[int][]int{1: []int{1, 2}, 2: []int{}, 3: []int{3, 4, 5}}
+            }
+
+            fn namedRows*(): map[str][]int {
+                return map[str][]int{"left": []int{10, 11}, "empty": []int{}}
+            }
+
+            fn textRows*(): map[int][]str {
+                return map[int][]str{1: []str{"a", "b"}, 2: []str{}}
+            }
+
+            fn namedTextRows*(): map[str][]str {
+                return map[str][]str{"left": []str{"x", "y"}, "empty": []str{}}
+            }
+
+            fn anyRows*(): map[int][]any {
+                return map[int][]any{1: []any{42}}
+            }
+            """);
+
+        runtime.Compile();
+
+        var rows = runtime.GetFunction("rows");
+        Assert.Equal(UmkaTypeKind.Map, rows.ResultType.Kind);
+        Assert.Equal(UmkaTypeKind.DynamicArray, rows.ResultType.MapValueKind);
+        Assert.Equal("[]int", rows.ResultType.MapValueTypeName);
+        Assert.Equal(IntPtr.Size * 3, rows.ResultType.MapValueNativeSize);
+        Assert.True(rows.ResultType.MapValueHasReferences);
+        Assert.Equal(UmkaTypeKind.SignedInteger, rows.ResultType.MapValueElementKind);
+        Assert.Equal("int", rows.ResultType.MapValueElementTypeName);
+        Assert.Equal(8, rows.ResultType.MapValueElementNativeSize);
+        Assert.False(rows.ResultType.MapValueElementHasReferences);
+        Assert.False(rows.ResultType.IsDeferred);
+        Assert.True(rows.CanReadResultAsDynamicArrayValueMap<long, long>());
+        Assert.False(rows.CanReadResultAsDynamicArrayValueMap<int, long>());
+        Assert.False(rows.CanReadResultAsMap<long, IntPtr>());
+
+        var rowValues = rows.CallDynamicArrayValueMap<long, long>();
+        Assert.Equal([1L, 2L], rowValues[1]);
+        Assert.Empty(rowValues[2]);
+        Assert.Equal([3L, 4L, 5L], rowValues[3]);
+        Assert.True(rows.TryCallDynamicArrayValueMap<long, long>(out var tryRowValues));
+        Assert.NotNull(tryRowValues);
+        Assert.Equal([3L, 4L, 5L], tryRowValues[3]);
+        Assert.False(rows.TryCallDynamicArrayValueMap<int, long>(out var wrongKeySize));
+        Assert.Null(wrongKeySize);
+
+        var namedRows = runtime.GetFunction("namedRows");
+        Assert.True(namedRows.ResultType.MapKeyHasReferences);
+        Assert.Equal(UmkaTypeKind.DynamicArray, namedRows.ResultType.MapValueKind);
+        Assert.False(namedRows.ResultType.IsDeferred);
+        Assert.True(namedRows.CanReadResultAsStringKeyDynamicArrayValueMap<long>());
+        Assert.False(namedRows.CanReadResultAsStringKeyDynamicArrayValueMap<int>());
+
+        var namedValues = namedRows.CallStringKeyDynamicArrayValueMap<long>();
+        Assert.Equal([10L, 11L], namedValues["left"]);
+        Assert.Empty(namedValues["empty"]);
+        Assert.True(namedRows.TryCallStringKeyDynamicArrayValueMap<long>(out var tryNamedValues));
+        Assert.NotNull(tryNamedValues);
+        Assert.Equal([10L, 11L], tryNamedValues["left"]);
+        Assert.False(namedRows.TryCallStringKeyDynamicArrayValueMap<int>(out var wrongElementSize));
+        Assert.Null(wrongElementSize);
+
+        var textRows = runtime.GetFunction("textRows");
+        Assert.Equal(UmkaTypeKind.DynamicArray, textRows.ResultType.MapValueKind);
+        Assert.Equal(UmkaTypeKind.String, textRows.ResultType.MapValueElementKind);
+        Assert.Equal("str", textRows.ResultType.MapValueElementTypeName);
+        Assert.Equal(IntPtr.Size, textRows.ResultType.MapValueElementNativeSize);
+        Assert.True(textRows.ResultType.MapValueElementHasReferences);
+        Assert.False(textRows.ResultType.IsDeferred);
+        Assert.True(textRows.CanReadResultAsStringArrayValueMap<long>());
+        Assert.False(textRows.CanReadResultAsStringArrayValueMap<int>());
+        Assert.False(textRows.CanReadResultAsDynamicArrayValueMap<long, IntPtr>());
+
+        var textValues = textRows.CallStringArrayValueMap<long>();
+        Assert.Collection(
+            textValues[1],
+            value => Assert.Equal("a", value),
+            value => Assert.Equal("b", value));
+        Assert.Empty(textValues[2]);
+        Assert.True(textRows.TryCallStringArrayValueMap<long>(out var tryTextValues));
+        Assert.NotNull(tryTextValues);
+        Assert.Collection(
+            tryTextValues[1],
+            value => Assert.Equal("a", value),
+            value => Assert.Equal("b", value));
+        Assert.False(textRows.TryCallStringArrayValueMap<int>(out var wrongTextKeySize));
+        Assert.Null(wrongTextKeySize);
+
+        var namedTextRows = runtime.GetFunction("namedTextRows");
+        Assert.True(namedTextRows.CanReadResultAsStringKeyStringArrayValueMap());
+        var namedTextValues = namedTextRows.CallStringKeyStringArrayValueMap();
+        Assert.Collection(
+            namedTextValues["left"],
+            value => Assert.Equal("x", value),
+            value => Assert.Equal("y", value));
+        Assert.Empty(namedTextValues["empty"]);
+        Assert.True(namedTextRows.TryCallStringKeyStringArrayValueMap(out var tryNamedTextValues));
+        Assert.NotNull(tryNamedTextValues);
+        Assert.Collection(
+            tryNamedTextValues["left"],
+            value => Assert.Equal("x", value),
+            value => Assert.Equal("y", value));
+
+        var anyRows = runtime.GetFunction("anyRows");
+        Assert.Equal(UmkaTypeKind.Interface, anyRows.ResultType.MapValueElementKind);
+        Assert.True(anyRows.ResultType.MapValueElementHasReferences);
+        Assert.True(anyRows.ResultType.IsDeferred);
+        Assert.False(anyRows.CanReadResultAsStringArrayValueMap<long>());
+        Assert.False(anyRows.TryCallStringArrayValueMap<long>(out var anyValues));
+        Assert.Null(anyValues);
+        Assert.Throws<InvalidOperationException>(() => anyRows.CallStringArrayValueMap<long>());
+    }
+
+    [Fact]
+    public void Function_exposes_deferred_result_metadata_and_rejects_readers()
     {
         NativeTestEnvironment.RequireNativeShim();
 
         using var runtime = UmkaRuntime.FromSource("""
             type IntFn = fn (): int
-
-            fn dynamicArray*(): []int {
-                return []int{1, 2, 3}
-            }
 
             fn mapValue*(): map[str]int {
                 return map[str]int{"answer": 42}
@@ -1106,13 +2074,25 @@ public sealed class MarshallingTests
 
         runtime.Compile();
 
-        AssertUnsupportedResult(runtime.GetFunction("dynamicArray"), UmkaTypeKind.DynamicArray);
         AssertUnsupportedResult(runtime.GetFunction("mapValue"), UmkaTypeKind.Map);
-        AssertUnsupportedResult(runtime.GetFunction("interfaceValue"), UmkaTypeKind.Interface);
-        AssertUnsupportedResult(runtime.GetFunction("closureValue"), UmkaTypeKind.Closure);
-        AssertUnsupportedResult(runtime.GetFunction("fiberValue"), UmkaTypeKind.Fiber);
-        AssertUnsupportedResult(runtime.GetFunction("weakPointer"), UmkaTypeKind.WeakPointer);
-        AssertUnsupportedResult(runtime.GetFunction("anyValue"), UmkaTypeKind.Interface, "interface");
+
+        var interfaceValue = runtime.GetFunction("interfaceValue");
+        AssertInterfaceMetadata(interfaceValue.ResultType, expectedItemCount: 3);
+        AssertUnsupportedResult(interfaceValue, UmkaTypeKind.Interface);
+
+        var closureValue = runtime.GetFunction("closureValue");
+        Assert.Equal(UmkaTypeKind.Closure, closureValue.ResultType.Kind);
+        Assert.True(closureValue.ResultType.HasReferences);
+        Assert.True(closureValue.ResultType.IsDeferred);
+        Assert.True(closureValue.ResultType.NativeSize >= IntPtr.Size * 2);
+        AssertUnsupportedResult(closureValue, UmkaTypeKind.Closure);
+        var fiberValue = runtime.GetFunction("fiberValue");
+        AssertFiberMetadata(fiberValue.ResultType);
+        AssertUnsupportedResult(fiberValue, UmkaTypeKind.Fiber);
+
+        var anyValue = runtime.GetFunction("anyValue");
+        AssertAnyMetadata(anyValue.ResultType);
+        AssertUnsupportedResult(anyValue, UmkaTypeKind.Interface, "interface");
     }
 
     [Fact]
@@ -1541,10 +2521,39 @@ public sealed class MarshallingTests
             value => Assert.Equal(3L, value));
     }
 
+    private static void AssertStringArraySnapshot(string?[] values)
+    {
+        Assert.Collection(
+            values,
+            value => Assert.Equal("a", value),
+            Assert.Null,
+            value => Assert.Equal("b", value));
+    }
+
+    private static void AssertNestedArraySnapshot(long[][] values)
+    {
+        Assert.Equal(3, values.Length);
+        Assert.Equal([1L, 2L], values[0]);
+        Assert.Empty(values[1]);
+        Assert.Equal([3L], values[2]);
+    }
+
+    private static void AssertNestedStringArraySnapshot(string?[][] values)
+    {
+        Assert.Equal(3, values.Length);
+        Assert.Collection(
+            values[0],
+            value => Assert.Equal("a", value),
+            Assert.Null);
+        Assert.Empty(values[1]);
+        Assert.Collection(values[2], value => Assert.Equal("b", value));
+    }
+
     private static void AssertUnsupportedArgument(
         UmkaFunction function,
         UmkaTypeKind expectedKind,
-        string? expectedTypeName = null)
+        string? expectedTypeName = null,
+        string? expectedMessage = null)
     {
         Assert.Single(function.ParameterTypes);
         Assert.Equal(expectedKind, function.ParameterTypes[0].Kind);
@@ -1553,7 +2562,7 @@ public sealed class MarshallingTests
 
         var ex = Assert.Throws<ArgumentException>(() => function.CallInt64(UmkaValue.FromPointer(IntPtr.Zero)));
 
-        Assert.Contains("does not support", ex.Message);
+        Assert.Contains(expectedMessage ?? "does not support", ex.Message);
     }
 
     private static void AssertUnsupportedResult(
@@ -1570,6 +2579,33 @@ public sealed class MarshallingTests
         Assert.Throws<InvalidOperationException>(() => function.CallPointer());
         Assert.Throws<InvalidOperationException>(() => function.CallValue());
         Assert.Throws<InvalidOperationException>(() => function.CallStruct<IntPair>());
+    }
+
+    private static void AssertInterfaceMetadata(UmkaTypeInfo type, int expectedItemCount)
+    {
+        Assert.Equal(UmkaTypeKind.Interface, type.Kind);
+        Assert.True(type.HasReferences);
+        Assert.True(type.IsDeferred);
+        Assert.Equal(expectedItemCount, type.ItemCount);
+        Assert.True(type.NativeSize >= IntPtr.Size * 2);
+        Assert.False(type.CanReadAsValue());
+    }
+
+    private static void AssertAnyMetadata(UmkaTypeInfo type)
+    {
+        AssertInterfaceMetadata(type, expectedItemCount: 2);
+        Assert.Contains("interface", type.TypeName);
+        Assert.Equal(IntPtr.Size * 2, type.NativeSize);
+    }
+
+    private static void AssertFiberMetadata(UmkaTypeInfo type)
+    {
+        Assert.Equal(UmkaTypeKind.Fiber, type.Kind);
+        Assert.Equal("fiber", type.TypeName);
+        Assert.True(type.HasReferences);
+        Assert.True(type.IsDeferred);
+        Assert.Equal(IntPtr.Size, type.NativeSize);
+        Assert.False(type.CanReadAsValue());
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1614,6 +2650,12 @@ public sealed class MarshallingTests
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct WeakBox
+    {
+        public ulong Value;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct Point
     {
         public double X;
@@ -1646,5 +2688,12 @@ public sealed class MarshallingTests
     {
         Low = -8,
         High = 12
+    }
+
+    private static void AssertEnumMember(UmkaEnumMemberInfo member, string name, long signedValue, ulong unsignedValue)
+    {
+        Assert.Equal(name, member.Name);
+        Assert.Equal(signedValue, member.SignedValue);
+        Assert.Equal(unsignedValue, member.UnsignedValue);
     }
 }

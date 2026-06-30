@@ -96,6 +96,7 @@ public sealed class PublicApiTests
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.SignedInteger, "int").CanReadAsValue());
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.String, "str").CanReadAsValue());
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Pointer, "^void").CanReadAsValue());
+        Assert.True(new UmkaTypeInfo(UmkaTypeKind.WeakPointer, "weak ^int").CanReadAsValue());
         Assert.False(new UmkaTypeInfo(UmkaTypeKind.DynamicArray, "[]int").CanReadAsValue());
 
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.SignedInteger, "int").CanReadAsScalar<int>());
@@ -112,6 +113,122 @@ public sealed class PublicApiTests
         var arrayType = new UmkaTypeInfo(UmkaTypeKind.StaticArray, "[2]int") { NativeSize = pairSize, ItemCount = 2 };
         var unknownLengthArrayType = arrayType with { ItemCount = 0 };
         var referencePairType = pairType with { HasReferences = true };
+        var dynamicArrayType = new UmkaTypeInfo(UmkaTypeKind.DynamicArray, "[]int")
+        {
+            ElementKind = UmkaTypeKind.SignedInteger,
+            ElementTypeName = "int",
+            ElementNativeSize = Marshal.SizeOf<long>()
+        };
+        var mapType = new UmkaTypeInfo(UmkaTypeKind.Map, "map[int]int")
+        {
+            MapKeyKind = UmkaTypeKind.SignedInteger,
+            MapKeyTypeName = "int",
+            MapKeyNativeSize = Marshal.SizeOf<long>(),
+            MapValueKind = UmkaTypeKind.SignedInteger,
+            MapValueTypeName = "int",
+            MapValueNativeSize = Marshal.SizeOf<long>()
+        };
+        var stringKeyMapType = mapType with
+        {
+            TypeName = "map[str]int",
+            MapKeyKind = UmkaTypeKind.String,
+            MapKeyTypeName = "str",
+            MapKeyNativeSize = IntPtr.Size,
+            MapKeyHasReferences = true
+        };
+        var stringValueMapType = mapType with
+        {
+            TypeName = "map[int]str",
+            MapValueKind = UmkaTypeKind.String,
+            MapValueTypeName = "str",
+            MapValueNativeSize = IntPtr.Size,
+            MapValueHasReferences = true
+        };
+        var stringMapType = stringKeyMapType with
+        {
+            TypeName = "map[str]str",
+            MapValueKind = UmkaTypeKind.String,
+            MapValueTypeName = "str",
+            MapValueNativeSize = IntPtr.Size,
+            MapValueHasReferences = true
+        };
+        var dynamicArrayValueMapType = mapType with
+        {
+            TypeName = "map[int][]int",
+            MapValueKind = UmkaTypeKind.DynamicArray,
+            MapValueTypeName = "[]int",
+            MapValueNativeSize = IntPtr.Size * 3,
+            MapValueHasReferences = true,
+            MapValueElementKind = UmkaTypeKind.SignedInteger,
+            MapValueElementTypeName = "int",
+            MapValueElementNativeSize = Marshal.SizeOf<long>()
+        };
+        var stringKeyDynamicArrayValueMapType = stringKeyMapType with
+        {
+            TypeName = "map[str][]int",
+            MapValueKind = UmkaTypeKind.DynamicArray,
+            MapValueTypeName = "[]int",
+            MapValueNativeSize = IntPtr.Size * 3,
+            MapValueHasReferences = true,
+            MapValueElementKind = UmkaTypeKind.SignedInteger,
+            MapValueElementTypeName = "int",
+            MapValueElementNativeSize = Marshal.SizeOf<long>()
+        };
+        var stringArrayValueMapType = dynamicArrayValueMapType with
+        {
+            TypeName = "map[int][]str",
+            MapValueTypeName = "[]str",
+            MapValueElementKind = UmkaTypeKind.String,
+            MapValueElementTypeName = "str",
+            MapValueElementNativeSize = IntPtr.Size,
+            MapValueElementHasReferences = true
+        };
+        var stringKeyStringArrayValueMapType = stringKeyDynamicArrayValueMapType with
+        {
+            TypeName = "map[str][]str",
+            MapValueTypeName = "[]str",
+            MapValueElementKind = UmkaTypeKind.String,
+            MapValueElementTypeName = "str",
+            MapValueElementNativeSize = IntPtr.Size,
+            MapValueElementHasReferences = true
+        };
+        var unsupportedReferenceMapType = dynamicArrayValueMapType with
+        {
+            TypeName = "map[int][]any",
+            MapValueTypeName = "[]any",
+            MapValueElementKind = UmkaTypeKind.Interface,
+            MapValueElementTypeName = "any",
+            MapValueElementNativeSize = IntPtr.Size * 2,
+            MapValueElementHasReferences = true
+        };
+        var referenceDynamicArrayType = dynamicArrayType with
+        {
+            TypeName = "[]str",
+            ElementKind = UmkaTypeKind.String,
+            ElementTypeName = "str",
+            ElementNativeSize = IntPtr.Size,
+            ElementHasReferences = true
+        };
+        var nestedDynamicArrayType = dynamicArrayType with
+        {
+            TypeName = "[][]int",
+            ElementKind = UmkaTypeKind.DynamicArray,
+            ElementTypeName = "[]int",
+            ElementNativeSize = IntPtr.Size * 3,
+            ElementHasReferences = true,
+            NestedElementKind = UmkaTypeKind.SignedInteger,
+            NestedElementTypeName = "int",
+            NestedElementNativeSize = Marshal.SizeOf<long>()
+        };
+        var nestedReferenceDynamicArrayType = nestedDynamicArrayType with
+        {
+            TypeName = "[][]str",
+            ElementTypeName = "[]str",
+            NestedElementKind = UmkaTypeKind.String,
+            NestedElementTypeName = "str",
+            NestedElementNativeSize = IntPtr.Size,
+            NestedElementHasReferences = true
+        };
 
         Assert.True(pairType.CanReadAsStruct<ApiPair>());
         Assert.True(pairType.CanReadAsFixedLayout<ApiPair>());
@@ -126,11 +243,65 @@ public sealed class PublicApiTests
         Assert.True(unknownLengthArrayType.CanReadAsArray<long>(2));
         Assert.Throws<ArgumentOutOfRangeException>(() => arrayType.CanReadAsArray<long>(-1));
 
+        Assert.False(new UmkaTypeInfo(UmkaTypeKind.DynamicArray, "[]int").CanReadAsDynamicArray<long>());
+        Assert.True(dynamicArrayType.CanReadAsDynamicArray<long>());
+        Assert.False(dynamicArrayType.CanReadAsDynamicArray<int>());
+        Assert.False(referenceDynamicArrayType.CanReadAsDynamicArray<IntPtr>());
+        Assert.True(referenceDynamicArrayType.CanReadAsStringArray());
+        Assert.False(dynamicArrayType.CanReadAsStringArray());
+        Assert.True(nestedDynamicArrayType.CanReadAsNestedDynamicArray<long>());
+        Assert.False(nestedDynamicArrayType.CanReadAsNestedDynamicArray<int>());
+        Assert.False(dynamicArrayType.CanReadAsNestedDynamicArray<long>());
+        Assert.False(nestedReferenceDynamicArrayType.CanReadAsStringArray());
+        Assert.True(nestedReferenceDynamicArrayType.CanReadAsNestedStringArray());
+        Assert.False(dynamicArrayType.CanReadAsNestedStringArray());
+        Assert.False(dynamicArrayType.IsDeferred);
+        Assert.False(referenceDynamicArrayType.IsDeferred);
+        Assert.False(nestedDynamicArrayType.IsDeferred);
+        Assert.False(nestedReferenceDynamicArrayType.CanReadAsNestedDynamicArray<IntPtr>());
+        Assert.False(nestedReferenceDynamicArrayType.IsDeferred);
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.DynamicArray, "[]int").IsDeferred);
-        Assert.True(new UmkaTypeInfo(UmkaTypeKind.Map, "map[str]int").IsDeferred);
+        Assert.True(mapType.CanReadAsMap<long, long>());
+        Assert.False(mapType.CanReadAsMap<int, long>());
+        Assert.False(stringKeyMapType.CanReadAsMap<IntPtr, long>());
+        Assert.True(stringKeyMapType.CanReadAsStringKeyMap<long>());
+        Assert.False(stringKeyMapType.CanReadAsStringKeyMap<int>());
+        Assert.False(stringKeyMapType.CanReadAsStringValueMap<long>());
+        Assert.False(stringKeyMapType.CanReadAsStringMap());
+        Assert.True(stringValueMapType.CanReadAsStringValueMap<long>());
+        Assert.False(stringValueMapType.CanReadAsStringValueMap<int>());
+        Assert.False(stringValueMapType.CanReadAsStringKeyMap<long>());
+        Assert.False(stringValueMapType.CanReadAsStringMap());
+        Assert.True(stringMapType.CanReadAsStringMap());
+        Assert.False(stringMapType.CanReadAsStringKeyMap<long>());
+        Assert.False(unsupportedReferenceMapType.CanReadAsStringValueMap<long>());
+        Assert.True(dynamicArrayValueMapType.CanReadAsDynamicArrayValueMap<long, long>());
+        Assert.False(dynamicArrayValueMapType.CanReadAsDynamicArrayValueMap<int, long>());
+        Assert.False(dynamicArrayValueMapType.CanReadAsDynamicArrayValueMap<long, int>());
+        Assert.False(dynamicArrayValueMapType.CanReadAsMap<long, IntPtr>());
+        Assert.True(stringKeyDynamicArrayValueMapType.CanReadAsStringKeyDynamicArrayValueMap<long>());
+        Assert.False(stringKeyDynamicArrayValueMapType.CanReadAsStringKeyDynamicArrayValueMap<int>());
+        Assert.False(unsupportedReferenceMapType.CanReadAsDynamicArrayValueMap<long, IntPtr>());
+        Assert.True(stringArrayValueMapType.CanReadAsStringArrayValueMap<long>());
+        Assert.False(stringArrayValueMapType.CanReadAsStringArrayValueMap<int>());
+        Assert.False(stringArrayValueMapType.CanReadAsDynamicArrayValueMap<long, IntPtr>());
+        Assert.True(stringKeyStringArrayValueMapType.CanReadAsStringKeyStringArrayValueMap());
+        Assert.False(dynamicArrayValueMapType.CanReadAsStringKeyStringArrayValueMap());
+        Assert.False(mapType.IsDeferred);
+        Assert.False(stringKeyMapType.IsDeferred);
+        Assert.False(stringValueMapType.IsDeferred);
+        Assert.False(stringMapType.IsDeferred);
+        Assert.False(dynamicArrayValueMapType.IsDeferred);
+        Assert.False(stringKeyDynamicArrayValueMapType.IsDeferred);
+        Assert.False(stringArrayValueMapType.IsDeferred);
+        Assert.False(stringKeyStringArrayValueMapType.IsDeferred);
+        Assert.True(unsupportedReferenceMapType.IsDeferred);
+        Assert.True(new UmkaTypeInfo(UmkaTypeKind.Map, "map[int]int").IsDeferred);
+        Assert.True(new UmkaTypeInfo(UmkaTypeKind.WeakPointer, "weak ^int").CanReadAsWeakPointer());
+        Assert.False(new UmkaTypeInfo(UmkaTypeKind.Pointer, "^int").CanReadAsWeakPointer());
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Interface, "any").IsDeferred);
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Closure, "fn()").IsDeferred);
-        Assert.True(new UmkaTypeInfo(UmkaTypeKind.WeakPointer, "weak ^int").IsDeferred);
+        Assert.False(new UmkaTypeInfo(UmkaTypeKind.WeakPointer, "weak ^int").IsDeferred);
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Fiber, "fiber").IsDeferred);
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Function, "fn()").IsDeferred);
         Assert.False(new UmkaTypeInfo(UmkaTypeKind.Pointer, "^void").IsDeferred);
@@ -147,8 +318,23 @@ public sealed class PublicApiTests
         Assert.Throws<ArgumentException>(() => new UmkaTypeInfo(UmkaTypeKind.Unknown, "bad\0type"));
         Assert.Throws<ArgumentException>(() => typeInfo with { TypeName = "" });
         Assert.Throws<ArgumentException>(() => typeInfo with { TypeName = "bad\0type" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { ElementTypeName = "" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { ElementTypeName = "bad\0type" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { NestedElementTypeName = "" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { NestedElementTypeName = "bad\0type" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { MapKeyTypeName = "" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { MapKeyTypeName = "bad\0type" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { MapValueTypeName = "" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { MapValueTypeName = "bad\0type" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { MapValueElementTypeName = "" });
+        Assert.Throws<ArgumentException>(() => typeInfo with { MapValueElementTypeName = "bad\0type" });
         Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { NativeSize = -1 });
         Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { ItemCount = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { ElementNativeSize = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { NestedElementNativeSize = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { MapKeyNativeSize = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { MapValueNativeSize = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => typeInfo with { MapValueElementNativeSize = -1 });
     }
 
     [Fact]

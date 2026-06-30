@@ -392,6 +392,38 @@ public sealed class RuntimeSmokeTests
     }
 
     [Fact]
+    public void Runtime_run_source_convenience_executes_main_and_disposes_runtime()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        UmkaRuntime? configuredRuntime = null;
+        var observed = 0L;
+
+        UmkaRuntime.RunSource(
+            """
+            import "host.um"
+
+            fn main() {
+                host::record(42)
+            }
+            """,
+            configure: runtime =>
+            {
+                configuredRuntime = runtime;
+                runtime.AddModule("host.um", "fn record*(value: int)");
+                runtime.Register("record", frame =>
+                {
+                    observed = frame.GetInt64(0);
+                    return UmkaValue.Void;
+                });
+            });
+
+        Assert.Equal(42, observed);
+        Assert.NotNull(configuredRuntime);
+        Assert.True(configuredRuntime.IsDisposed);
+    }
+
+    [Fact]
     public void Runtime_can_call_managed_callback_from_umka()
     {
         NativeTestEnvironment.RequireNativeShim();

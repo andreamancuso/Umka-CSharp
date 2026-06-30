@@ -49,6 +49,17 @@ runtime.Run();
 
 Use `TryRun(out exception)` when `main()` runtime errors are expected input and should be handled without catching `UmkaException`.
 
+For one-shot scripts where the host does not need to retain exported functions, use `RunSource()`:
+
+```csharp
+UmkaRuntime.RunSource("""
+    fn main() {
+    }
+    """);
+```
+
+Use `TryRunSource(out exception)` when compile or runtime errors from a complete source string should be returned as data. Both helpers dispose the transient runtime before returning or throwing.
+
 ## Loading From Files
 
 Use `CompileFile` when the main Umka program lives on disk:
@@ -122,7 +133,7 @@ Console.WriteLine(add.ParameterCount);
 Console.WriteLine(add.CallInt64(UmkaValue.From(19), UmkaValue.From(23)));
 ```
 
-Calls must provide exactly `ParameterCount` arguments. Missing or extra arguments are rejected before native parameter slots are written. Umka default parameter syntax does not change this C# call contract; pass defaulted parameters explicitly. Umka variadic parameters are exposed as dynamic-array metadata and are not mapped to C# `params` arguments.
+`ParameterCount` is the total number of explicit Umka parameters. `RequiredParameterCount` is lower when the function has trailing default parameters that UmkaSharp can synthesize safely, or when the final Umka parameter is variadic. C# calls may omit trailing scalar, string, and pointer defaults; extra arguments, missing required arguments, and omitted defaults for unsupported heap-backed types are rejected before native parameter slots are written. Current Umka source rejects weak pointer default expressions, so weak pointer arguments must be passed explicitly. Umka variadic parameters are exposed as dynamic-array metadata. Pass either one explicit `UmkaValue.FromDynamicArray<TElement>(...)` value for the variadic parameter, or pass expanded trailing `UmkaValue` arguments whose kinds and ranges match the variadic element type.
 
 ## Next Steps
 
