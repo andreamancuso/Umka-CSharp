@@ -1,0 +1,2 @@
+Range: 7.5 - 12.5
+Distance squared: 25.0

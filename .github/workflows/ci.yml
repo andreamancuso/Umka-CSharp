@@ -3,14 +3,42 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
   release:
     types: [published]
   workflow_dispatch:
 
+env:
+  UMKA_REPOSITORY: vtereshkov/umka-lang
+  UMKA_REF: a66d5bf830130dd5435b4661ec15bfd34c11a08f
+
 jobs:
+  workflow-policy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout Umka
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UMKA_REPOSITORY }}
+          ref: ${{ env.UMKA_REF }}
+          path: external/umka-lang
+
+      - name: Verify publishing policy
+        shell: pwsh
+        run: ./scripts/verify-ci-publishing-policy.ps1
+
+      - name: Verify platform support policy
+        shell: pwsh
+        run: ./scripts/verify-platform-support.ps1
+
+      - name: Verify third-party notices
+        shell: pwsh
+        run: ./scripts/verify-third-party-notices.ps1 -UmkaRoot external/umka-lang
+
   build-native:
     strategy:
       fail-fast: false
@@ -31,7 +59,8 @@ jobs:
       - name: Checkout Umka
         uses: actions/checkout@v4
         with:
-          repository: vtereshkov/umka-lang
+          repository: ${{ env.UMKA_REPOSITORY }}
+          ref: ${{ env.UMKA_REF }}
           path: external/umka-lang
 
       - name: Configure native shim
@@ -86,13 +115,22 @@ jobs:
       - name: Build
         run: dotnet build UmkaSharp.sln --configuration Release --no-restore
 
+      - name: Verify benchmark harness
+        shell: pwsh
+        run: ./scripts/verify-benchmarks.ps1 -Configuration Release -NoBuild
+
       - name: Test
         run: dotnet test UmkaSharp.sln --configuration Release --no-build --verbosity normal
+
+      - name: Verify samples
+        shell: pwsh
+        run: ./scripts/verify-samples.ps1 -Configuration Release -NoBuild
 
   pack:
     needs: [build-native, test]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -135,9 +173,14 @@ jobs:
           /p:Version=${{ steps.version.outputs.version }}
           --output nupkg
 
-      - name: Verify packed package
+      - name: Verify package layout
         shell: pwsh
-        run: ./scripts/verify-package-local.ps1 -Version ${{ steps.version.outputs.version }} -Configuration Release -PackageDirectory nupkg
+        run: |
+          $packagePath = Join-Path $PWD 'nupkg/UmkaSharp.${{ steps.version.outputs.version }}.nupkg'
+          ./scripts/verify-package-layout.ps1 `
+            -PackagePath $packagePath `
+            -ExpectedVersion '${{ steps.version.outputs.version }}' `
+            -RequireSymbols
 
       - name: Upload NuGet package
         uses: actions/upload-artifact@v4
@@ -147,10 +190,83 @@ jobs:
             nupkg/*.nupkg
             nupkg/*.snupkg
 
-  publish:
+  package-smoke:
     needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Download NuGet package
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-package
+          path: nupkg
+
+      - name: Run package consumer sample
+        shell: pwsh
+        run: |
+          $packageDir = Join-Path $PWD 'nupkg'
+          $packageCacheDir = Join-Path $PWD '.nuget-packages'
+          $project = Join-Path $PWD 'samples/PackageConsumer/PackageConsumer.csproj'
+          $version = '${{ needs.pack.outputs.version }}'
+
+          $env:NUGET_PACKAGES = $packageCacheDir
+          dotnet restore $project `
+            --source $packageDir `
+            --packages $packageCacheDir `
+            /p:UmkaSharpPackageVersion=$version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet restore failed with exit code $LASTEXITCODE."
+          }
+
+          dotnet build $project `
+            --configuration Release `
+            --no-restore `
+            /p:UmkaSharpPackageVersion=$version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet build failed with exit code $LASTEXITCODE."
+          }
+
+          $runOutput = dotnet run `
+            --project $project `
+            --configuration Release `
+            --no-build `
+            --no-restore 2>&1
+
+          $runExitCode = $LASTEXITCODE
+          $runOutput | ForEach-Object { Write-Host $_ }
+
+          if ($runExitCode -ne 0) {
+            throw "dotnet run failed with exit code $runExitCode."
+          }
+
+          $expectedOutputPath = Join-Path $PWD 'samples/PackageConsumer/expected-output.txt'
+          $expectedOutput = Get-Content -LiteralPath $expectedOutputPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          foreach ($expectedLine in $expectedOutput) {
+            if ($runOutput -notcontains $expectedLine) {
+              throw "Package consumer output did not contain expected line '$expectedLine'."
+            }
+          }
+
+  publish:
+    needs: [workflow-policy, pack, package-smoke]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' && github.event.action == 'published'
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
 
     steps:
       - name: Download package
@@ -164,16 +280,24 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
+      - name: Verify NuGet API key
+        shell: bash
+        run: |
+          if [[ -z "$NUGET_API_KEY" ]]; then
+            echo "::error::NUGET_API_KEY repository secret is required for release publishing."
+            exit 1
+          fi
+
       - name: Publish package to NuGet
         run: >
           dotnet nuget push nupkg/*.nupkg
-          --api-key ${{ secrets.NUGET_API_KEY }}
+          --api-key "$NUGET_API_KEY"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
 
       - name: Publish symbols to NuGet
         run: >
           dotnet nuget push nupkg/*.snupkg
-          --api-key ${{ secrets.NUGET_API_KEY }}
+          --api-key "$NUGET_API_KEY"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
