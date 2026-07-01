@@ -50,6 +50,17 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, EntryPoint = "ushim_alive", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Alive(IntPtr runtime);
 
+    [DllImport(LibraryName, EntryPoint = "ushim_request_interrupt", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern void RequestInterrupt(
+        IntPtr runtime,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? message);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_clear_interrupt", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void ClearInterrupt(IntPtr runtime);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_interrupt_requested", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int InterruptRequested(IntPtr runtime);
+
     [DllImport(LibraryName, EntryPoint = "ushim_add_module", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     internal static extern int AddModule(
         IntPtr runtime,
@@ -77,6 +88,147 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, EntryPoint = "ushim_call", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Call(IntPtr runtime, ref FunctionContext function);
 
+    [DllImport(LibraryName, EntryPoint = "ushim_context_call_retain_result", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextCallRetainResult(IntPtr runtime, ref FunctionContext function, out IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_callable_valid", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueCallableValid(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_make_callable_context", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueMakeCallableContext(IntPtr runtime, IntPtr handle, out FunctionContext function);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callable_call", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallableCall(IntPtr runtime, IntPtr handle, ref FunctionContext function);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callable_call_retain_result", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallableCallRetainResult(IntPtr runtime, IntPtr callable, ref FunctionContext function, out IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_native_value", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgNativeValue(IntPtr runtime, ref FunctionContext function, int index, IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_release", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void NativeValueRelease(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_retain_host_data", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueRetainHostData(IntPtr runtime, IntPtr pointer, out IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_state", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyState(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_self_state", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnySelfState(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_kind", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern NativeUmkaTypeKind NativeValueAnyGetPayloadKind(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_size", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadSize(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_item_count", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadItemCount(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_has_references", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadHasReferences(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_type_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadTypeName(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_element_kind", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern NativeUmkaTypeKind NativeValueAnyGetPayloadElementKind(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_element_size", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadElementSize(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_element_has_references", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadElementHasReferences(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_element_type_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadElementTypeName(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_nested_element_kind", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern NativeUmkaTypeKind NativeValueAnyGetPayloadNestedElementKind(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_nested_element_size", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadNestedElementSize(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_nested_element_has_references", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadNestedElementHasReferences(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_nested_element_type_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadNestedElementTypeName(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_key_kind", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern NativeUmkaTypeKind NativeValueAnyGetPayloadMapKeyKind(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_key_size", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadMapKeySize(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_key_has_references", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadMapKeyHasReferences(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_key_type_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadMapKeyTypeName(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_kind", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern NativeUmkaTypeKind NativeValueAnyGetPayloadMapValueKind(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_size", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadMapValueSize(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_has_references", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadMapValueHasReferences(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_type_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadMapValueTypeName(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_element_kind", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern NativeUmkaTypeKind NativeValueAnyGetPayloadMapValueElementKind(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_element_size", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadMapValueElementSize(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_element_has_references", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadMapValueElementHasReferences(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_map_value_element_type_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadMapValueElementTypeName(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_is_variadic_parameter_list", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadIsVariadicParameterList(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_is_enum", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadIsEnum(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_enum_member_count", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyGetPayloadEnumMemberCount(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_enum_member_name", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadEnumMemberName(IntPtr handle, int memberIndex);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_enum_member_signed_value", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long NativeValueAnyGetPayloadEnumMemberSignedValue(IntPtr handle, int memberIndex);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_enum_member_unsigned_value", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong NativeValueAnyGetPayloadEnumMemberUnsignedValue(IntPtr handle, int memberIndex);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_int", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long NativeValueAnyGetPayloadInt(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_uint", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong NativeValueAnyGetPayloadUInt(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_real", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern double NativeValueAnyGetPayloadReal(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_ptr", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadPointer(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_get_payload_string", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr NativeValueAnyGetPayloadString(IntPtr handle);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_native_value_any_retain_payload", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeValueAnyRetainPayload(IntPtr runtime, IntPtr handle, out IntPtr payloadHandle);
+
     [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_int", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int ContextSetArgInt(IntPtr runtime, ref FunctionContext function, int index, long value);
 
@@ -95,6 +247,34 @@ internal static partial class NativeMethods
         ref FunctionContext function,
         int index,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_null", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyNull(IntPtr runtime, ref FunctionContext function, int index);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_int", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyInt(IntPtr runtime, ref FunctionContext function, int index, long value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_uint", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyUInt(IntPtr runtime, ref FunctionContext function, int index, ulong value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_char", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyChar(IntPtr runtime, ref FunctionContext function, int index, ulong value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_real", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyReal(IntPtr runtime, ref FunctionContext function, int index, double value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_bool", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyBool(IntPtr runtime, ref FunctionContext function, int index, int value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_string", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern int ContextSetArgAnyString(
+        IntPtr runtime,
+        ref FunctionContext function,
+        int index,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_any_native_value", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgAnyNativeValue(IntPtr runtime, ref FunctionContext function, int index, IntPtr handle);
 
     [DllImport(LibraryName, EntryPoint = "ushim_context_get_result_int", CallingConvention = CallingConvention.Cdecl)]
     internal static extern long ContextGetResultInt(ref FunctionContext function);
@@ -352,6 +532,46 @@ internal static partial class NativeMethods
         int index,
         IntPtr lengths,
         int lengthCount,
+        IntPtr values,
+        int valueCount);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgMap(
+        IntPtr runtime,
+        ref FunctionContext function,
+        int index,
+        IntPtr keys,
+        int keyBytes,
+        IntPtr values,
+        int valueBytes);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_string_key_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgStringKeyMap(
+        IntPtr runtime,
+        ref FunctionContext function,
+        int index,
+        IntPtr keys,
+        int keyCount,
+        IntPtr values,
+        int valueBytes);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_string_value_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgStringValueMap(
+        IntPtr runtime,
+        ref FunctionContext function,
+        int index,
+        IntPtr keys,
+        int keyBytes,
+        IntPtr values,
+        int valueCount);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_context_set_arg_string_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ContextSetArgStringMap(
+        IntPtr runtime,
+        ref FunctionContext function,
+        int index,
+        IntPtr keys,
+        int keyCount,
         IntPtr values,
         int valueCount);
 
@@ -694,6 +914,9 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, EntryPoint = "ushim_callback_get_param_string", CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr CallbackGetParamString(IntPtr parameters, int index);
 
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_retain_param", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackRetainParam(IntPtr parameters, IntPtr result, int index, out IntPtr handle);
+
     [DllImport(LibraryName, EntryPoint = "ushim_callback_get_param_data", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int CallbackGetParamData(IntPtr parameters, int index, IntPtr buffer, int size);
 
@@ -862,8 +1085,38 @@ internal static partial class NativeMethods
         IntPtr result,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? value);
 
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_null", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyNull(IntPtr parameters, IntPtr result);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_int", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyInt(IntPtr parameters, IntPtr result, long value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_uint", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyUInt(IntPtr parameters, IntPtr result, ulong value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_char", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyChar(IntPtr parameters, IntPtr result, ulong value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_real", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyReal(IntPtr parameters, IntPtr result, double value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_bool", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyBool(IntPtr parameters, IntPtr result, int value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_string", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern int CallbackSetResultAnyString(
+        IntPtr parameters,
+        IntPtr result,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? value);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_any_native_value", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultAnyNativeValue(IntPtr parameters, IntPtr result, IntPtr handle);
+
     [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_data", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int CallbackSetResultData(IntPtr parameters, IntPtr result, IntPtr value, int size);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_native_value", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultNativeValue(IntPtr parameters, IntPtr result, IntPtr handle);
 
     [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_dynarray", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int CallbackSetResultDynamicArray(
@@ -896,6 +1149,42 @@ internal static partial class NativeMethods
         IntPtr result,
         IntPtr lengths,
         int lengthCount,
+        IntPtr values,
+        int valueCount);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultMap(
+        IntPtr parameters,
+        IntPtr result,
+        IntPtr keys,
+        int keyBytes,
+        IntPtr values,
+        int valueBytes);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_string_key_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultStringKeyMap(
+        IntPtr parameters,
+        IntPtr result,
+        IntPtr keys,
+        int keyCount,
+        IntPtr values,
+        int valueBytes);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_string_value_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultStringValueMap(
+        IntPtr parameters,
+        IntPtr result,
+        IntPtr keys,
+        int keyBytes,
+        IntPtr values,
+        int valueCount);
+
+    [DllImport(LibraryName, EntryPoint = "ushim_callback_set_result_string_map", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int CallbackSetResultStringMap(
+        IntPtr parameters,
+        IntPtr result,
+        IntPtr keys,
+        int keyCount,
         IntPtr values,
         int valueCount);
 

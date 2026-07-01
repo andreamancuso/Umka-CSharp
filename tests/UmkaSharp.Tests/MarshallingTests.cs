@@ -1506,6 +1506,85 @@ public sealed class MarshallingTests
     }
 
     [Fact]
+    public void Function_marshals_map_arguments()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            fn sumScores*(value: map[int]int): int {
+                total := 0
+                for _, key in keys(value) {
+                    total += value[key]
+                }
+                return total
+            }
+
+            fn textScore*(value: map[str]int): int {
+                return value["alpha"] + value["beta"]
+            }
+
+            fn labelLength*(value: map[int]str): int {
+                return len(value[1]) + len(value[2])
+            }
+
+            fn aliasLength*(value: map[str]str): int {
+                return len(value["a"]) + len(value["b"])
+            }
+
+            fn anyScores*(value: map[int]any): int {
+                return len(value)
+            }
+            """);
+
+        runtime.Compile();
+
+        var sumScores = runtime.GetFunction("sumScores");
+        var source = new Dictionary<long, long> { [1] = 10, [2] = 14, [3] = 18 };
+        var scores = UmkaValue.FromMap(source);
+        source[1] = 99;
+
+        Assert.Equal(UmkaValueKind.Map, scores.Kind);
+        Assert.Contains("Map", scores.ToString());
+        var diagnostic = Assert.IsType<Dictionary<object, object?>>(scores.Value);
+        Assert.Equal(10L, diagnostic[1L]);
+        Assert.True(sumScores.CanCallWith(scores));
+        Assert.False(sumScores.CanCallWith(UmkaValue.FromStringKeyMap(new Dictionary<string, long> { ["1"] = 10 })));
+        Assert.Equal(42, sumScores.CallInt64(scores));
+        Assert.Equal(0, sumScores.CallInt64(UmkaValue.FromMap(new Dictionary<long, long>())));
+
+        var textScores = UmkaValue.FromStringKeyMap(new Dictionary<string, long>
+        {
+            ["alpha"] = 17,
+            ["beta"] = 25,
+        });
+        var textScore = runtime.GetFunction("textScore");
+        Assert.True(textScore.CanCallWith(textScores));
+        Assert.Equal(42, textScore.CallInt64(textScores));
+
+        var labels = UmkaValue.FromStringValueMap(new Dictionary<long, string?>
+        {
+            [1] = "one",
+            [2] = "two",
+        });
+        Assert.True(runtime.GetFunction("labelLength").CanCallWith(labels));
+        Assert.Equal(6, runtime.GetFunction("labelLength").CallInt64(labels));
+
+        var aliases = UmkaValue.FromStringMap(new Dictionary<string, string?>
+        {
+            ["a"] = "alpha",
+            ["b"] = "beta",
+        });
+        Assert.True(runtime.GetFunction("aliasLength").CanCallWith(aliases));
+        Assert.Equal(9, runtime.GetFunction("aliasLength").CallInt64(aliases));
+
+        var anyScores = runtime.GetFunction("anyScores");
+        Assert.False(anyScores.CanCallWith(scores));
+        var anyEx = Assert.Throws<ArgumentException>(() => anyScores.CallInt64(scores));
+        Assert.Contains("value type", anyEx.Message);
+        Assert.Contains("contains Umka-managed references", anyEx.Message);
+    }
+
+    [Fact]
     public void Function_rejects_unsupported_non_scalar_argument_kinds()
     {
         NativeTestEnvironment.RequireNativeShim();
@@ -1513,10 +1592,6 @@ public sealed class MarshallingTests
         using var runtime = UmkaRuntime.FromSource("""
             type Drawable = interface {
                 area(): real
-            }
-
-            fn takeMap*(value: map[str]int): int {
-                return 0
             }
 
             fn takeInterface*(value: Drawable): int {
@@ -1542,18 +1617,14 @@ public sealed class MarshallingTests
 
         runtime.Compile();
 
-        AssertUnsupportedArgument(
-            runtime.GetFunction("takeMap"),
-            UmkaTypeKind.Map,
-            expectedMessage: "not host-side map creation, insertion, rooting, ownership transfer, or assignment/reference-count updates");
-
         var takeInterface = runtime.GetFunction("takeInterface");
         AssertInterfaceMetadata(takeInterface.ParameterTypes[0], expectedItemCount: 3);
         AssertUnsupportedArgument(takeInterface, UmkaTypeKind.Interface);
 
         var takeAny = runtime.GetFunction("takeAny");
         AssertAnyMetadata(takeAny.ParameterTypes[0]);
-        AssertUnsupportedArgument(takeAny, UmkaTypeKind.Interface, "interface");
+        Assert.True(takeAny.CanCallWith(UmkaAnyValue.From(42).ToValue()));
+        Assert.False(takeAny.CanCallWith(UmkaValue.FromPointer(IntPtr.Zero)));
 
         AssertUnsupportedArgument(runtime.GetFunction("takeClosure"), UmkaTypeKind.Closure);
 
@@ -2083,16 +2154,24 @@ public sealed class MarshallingTests
         var closureValue = runtime.GetFunction("closureValue");
         Assert.Equal(UmkaTypeKind.Closure, closureValue.ResultType.Kind);
         Assert.True(closureValue.ResultType.HasReferences);
-        Assert.True(closureValue.ResultType.IsDeferred);
+        Assert.True(closureValue.ResultType.IsCallable);
+        Assert.False(closureValue.ResultType.IsDeferred);
         Assert.True(closureValue.ResultType.NativeSize >= IntPtr.Size * 2);
-        AssertUnsupportedResult(closureValue, UmkaTypeKind.Closure);
+        Assert.True(closureValue.CanReadResultAsNativeValue());
+        using (var retainedClosure = closureValue.CallNativeValue())
+        {
+            var callable = retainedClosure.AsCallable();
+            Assert.Equal(42, callable.CallInt64());
+        }
+
         var fiberValue = runtime.GetFunction("fiberValue");
         AssertFiberMetadata(fiberValue.ResultType);
         AssertUnsupportedResult(fiberValue, UmkaTypeKind.Fiber);
 
         var anyValue = runtime.GetFunction("anyValue");
         AssertAnyMetadata(anyValue.ResultType);
-        AssertUnsupportedResult(anyValue, UmkaTypeKind.Interface, "interface");
+        Assert.True(anyValue.CanReadResultAsAny());
+        Assert.Equal(42, anyValue.CallAny().Payload.AsInt64());
     }
 
     [Fact]
@@ -2593,8 +2672,13 @@ public sealed class MarshallingTests
 
     private static void AssertAnyMetadata(UmkaTypeInfo type)
     {
-        AssertInterfaceMetadata(type, expectedItemCount: 2);
+        Assert.Equal(UmkaTypeKind.Interface, type.Kind);
+        Assert.True(type.HasReferences);
+        Assert.False(type.IsDeferred);
+        Assert.True(type.IsAny);
+        Assert.True(type.CanReadAsValue());
         Assert.Contains("interface", type.TypeName);
+        Assert.Equal(2, type.ItemCount);
         Assert.Equal(IntPtr.Size * 2, type.NativeSize);
     }
 

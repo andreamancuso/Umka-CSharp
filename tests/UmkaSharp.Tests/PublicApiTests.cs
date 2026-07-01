@@ -300,10 +300,12 @@ public sealed class PublicApiTests
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.WeakPointer, "weak ^int").CanReadAsWeakPointer());
         Assert.False(new UmkaTypeInfo(UmkaTypeKind.Pointer, "^int").CanReadAsWeakPointer());
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Interface, "any").IsDeferred);
-        Assert.True(new UmkaTypeInfo(UmkaTypeKind.Closure, "fn()").IsDeferred);
+        Assert.True(new UmkaTypeInfo(UmkaTypeKind.Closure, "fn()").IsCallable);
+        Assert.False(new UmkaTypeInfo(UmkaTypeKind.Closure, "fn()").IsDeferred);
         Assert.False(new UmkaTypeInfo(UmkaTypeKind.WeakPointer, "weak ^int").IsDeferred);
         Assert.True(new UmkaTypeInfo(UmkaTypeKind.Fiber, "fiber").IsDeferred);
-        Assert.True(new UmkaTypeInfo(UmkaTypeKind.Function, "fn()").IsDeferred);
+        Assert.True(new UmkaTypeInfo(UmkaTypeKind.Function, "fn()").IsCallable);
+        Assert.False(new UmkaTypeInfo(UmkaTypeKind.Function, "fn()").IsDeferred);
         Assert.False(new UmkaTypeInfo(UmkaTypeKind.Pointer, "^void").IsDeferred);
     }
 

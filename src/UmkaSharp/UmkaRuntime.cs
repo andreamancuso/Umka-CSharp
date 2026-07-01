@@ -14,6 +14,7 @@ public sealed class UmkaRuntime : IDisposable
     private readonly List<UmkaCallback> _callbacks = new();
     private readonly Dictionary<string, UmkaCallback> _callbacksByName = new(StringComparer.Ordinal);
     private readonly Dictionary<IntPtr, UmkaHostHandle> _hostHandles = new();
+    private readonly Dictionary<IntPtr, UmkaNativeValue> _nativeValues = new();
     private readonly HashSet<long> _activeCallbackFrames = new();
     private readonly HashSet<string> _moduleFileNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> _callbackNames = new(StringComparer.Ordinal);
@@ -92,6 +93,16 @@ public sealed class UmkaRuntime : IDisposable
 
     /// <summary>Gets the last managed exception thrown by any callback on this runtime, if any.</summary>
     public Exception? LastCallbackException => _lastCallbackException;
+
+    /// <summary>Gets a value indicating whether an interrupt request is currently pending on the native runtime.</summary>
+    public bool IsInterruptRequested
+    {
+        get
+        {
+            CheckUsable();
+            return NativeMethods.InterruptRequested(Handle) != 0;
+        }
+    }
 
     /// <summary>Gets the observed lifecycle state of this runtime.</summary>
     public UmkaRuntimeState State =>
@@ -580,6 +591,22 @@ public sealed class UmkaRuntime : IDisposable
         return true;
     }
 
+    /// <summary>Requests that the native Umka runtime stop execution at the next interrupt check.</summary>
+    /// <remarks>This method may be called from another managed thread while the owning thread is executing Umka code.</remarks>
+    public void RequestInterrupt(string? message = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed || Handle == IntPtr.Zero, this);
+        UmkaStringValidation.ThrowIfContainsNullCharacter(message, nameof(message));
+        NativeMethods.RequestInterrupt(Handle, message);
+    }
+
+    /// <summary>Clears a pending native Umka interrupt request.</summary>
+    public void ClearInterrupt()
+    {
+        CheckUsable();
+        NativeMethods.ClearInterrupt(Handle);
+    }
+
     /// <summary>Compiles the loaded main source and all imported modules.</summary>
     public void Compile()
     {
@@ -690,6 +717,55 @@ public sealed class UmkaRuntime : IDisposable
         if (context.EntryOffset <= 0)
             return false;
 
+        function = CreateFunctionFromContext(functionName, moduleName, context);
+        return true;
+    }
+
+    internal UmkaFunction CreateCallableFunction(UmkaNativeValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        CheckCallable();
+
+        if (!ReferenceEquals(value.Runtime, this))
+        {
+            throw new InvalidOperationException(
+                $"Retained native value of Umka type '{value.Type.TypeName}' belongs to a different runtime.");
+        }
+
+        if (value.Type.Kind == UmkaTypeKind.Fiber)
+        {
+            throw new NotSupportedException(
+                "Umka fiber values cannot be invoked from C# because the native API does not expose safe host-side fiber resume or ownership semantics.");
+        }
+
+        if (!value.Type.IsCallable)
+        {
+            throw new NotSupportedException(
+                $"Retained native value of Umka type '{value.Type.TypeName}' is not an Umka callable value.");
+        }
+
+        if (NativeMethods.NativeValueCallableValid(value.Handle) == 0)
+        {
+            throw new InvalidOperationException(
+                $"Retained native value of Umka type '{value.Type.TypeName}' is not a valid callable value.");
+        }
+
+        var status = NativeMethods.NativeValueMakeCallableContext(Handle, value.Handle, out var context);
+        if (status != 0 || context.EntryOffset <= 0)
+        {
+            throw new InvalidOperationException(
+                $"Retained native value of Umka type '{value.Type.TypeName}' could not be converted to a callable context.");
+        }
+
+        return CreateFunctionFromContext("<callable>", moduleName: null, context, value);
+    }
+
+    private UmkaFunction CreateFunctionFromContext(
+        string functionName,
+        string? moduleName,
+        NativeMethods.FunctionContext context,
+        UmkaNativeValue? callableValue = null)
+    {
         var parameterCount = NativeMethods.ContextGetArgumentCount(ref context);
         var parameterTypes = new UmkaTypeInfo[parameterCount];
         var nativeParameterKinds = new NativeUmkaTypeKind[parameterCount];
@@ -707,7 +783,7 @@ public sealed class UmkaRuntime : IDisposable
         var requiredParameterCount = NativeMethods.ContextGetRequiredArgumentCount(ref context);
         var defaultParameterCount = NativeMethods.ContextGetDefaultArgumentCount(ref context);
 
-        function = new UmkaFunction(
+        return new UmkaFunction(
             this,
             functionName,
             moduleName,
@@ -717,8 +793,8 @@ public sealed class UmkaRuntime : IDisposable
             nativeParameterElementKinds,
             requiredParameterCount,
             defaultParameterCount,
-            resultType);
-        return true;
+            resultType,
+            callableValue);
     }
 
     private static UmkaTypeInfo CreateContextParameterTypeInfo(
@@ -941,6 +1017,149 @@ public sealed class UmkaRuntime : IDisposable
             handle.DisposeFromRuntime();
     }
 
+    internal UmkaNativeValue AdoptNativeValue(IntPtr handle, UmkaTypeInfo type)
+    {
+        CheckUsable();
+        if (handle == IntPtr.Zero)
+            throw new UmkaException("Native Umka value retention returned a null handle.");
+
+        var value = new UmkaNativeValue(this, type, handle);
+        _nativeValues.Add(handle, value);
+        return value;
+    }
+
+    internal UmkaAnyValue InspectAnyValue(UmkaNativeValue value)
+    {
+        CheckUsable();
+        ObjectDisposedException.ThrowIf(value.IsDisposed, value);
+        if (!ReferenceEquals(value.Runtime, this))
+            throw new InvalidOperationException("The native Umka value is not owned by this runtime.");
+        if (!value.Type.IsAny)
+            throw new InvalidOperationException($"Retained native Umka value type '{value.Type.TypeName}' is not Umka any.");
+
+        var state = NativeMethods.NativeValueAnyState(value.Handle);
+        if (state == 1)
+            return UmkaAnyValue.Null;
+        if (state != 2)
+            throw new InvalidOperationException($"Retained native Umka value type '{value.Type.TypeName}' could not be deconstructed as Umka any.");
+        if (NativeMethods.NativeValueAnySelfState(value.Handle) == 0)
+            throw new InvalidOperationException($"Retained native Umka value type '{value.Type.TypeName}' did not expose a concrete any payload pointer.");
+
+        var nativeKind = NativeMethods.NativeValueAnyGetPayloadKind(value.Handle);
+        var payloadType = CreateAnyPayloadTypeInfo(value.Handle, nativeKind);
+        var payload = nativeKind switch
+        {
+            NativeUmkaTypeKind.Int8
+                or NativeUmkaTypeKind.Int16
+                or NativeUmkaTypeKind.Int32
+                or NativeUmkaTypeKind.Int => UmkaValue.From(NativeMethods.NativeValueAnyGetPayloadInt(value.Handle)),
+            NativeUmkaTypeKind.UInt8
+                or NativeUmkaTypeKind.UInt16
+                or NativeUmkaTypeKind.UInt32
+                or NativeUmkaTypeKind.UInt => UmkaValue.From(NativeMethods.NativeValueAnyGetPayloadUInt(value.Handle)),
+            NativeUmkaTypeKind.Char => CreateAnyCharacterPayload(value.Handle),
+            NativeUmkaTypeKind.Bool => UmkaValue.From(NativeMethods.NativeValueAnyGetPayloadInt(value.Handle) != 0),
+            NativeUmkaTypeKind.Real32
+                or NativeUmkaTypeKind.Real => UmkaValue.From(NativeMethods.NativeValueAnyGetPayloadReal(value.Handle)),
+            NativeUmkaTypeKind.String => UmkaValue.From(NativeMethods.NativeValueAnyGetPayloadString(value.Handle).ToManagedString()),
+            NativeUmkaTypeKind.Pointer => UmkaValue.FromPointer(NativeMethods.NativeValueAnyGetPayloadPointer(value.Handle)),
+            NativeUmkaTypeKind.WeakPointer => UmkaValue.FromWeakPointer(NativeMethods.NativeValueAnyGetPayloadUInt(value.Handle)),
+            NativeUmkaTypeKind.StaticArray
+                or NativeUmkaTypeKind.DynamicArray
+                or NativeUmkaTypeKind.Map
+                or NativeUmkaTypeKind.Struct
+                or NativeUmkaTypeKind.Interface
+                or NativeUmkaTypeKind.Closure
+                or NativeUmkaTypeKind.Function => RetainAnyPayload(value, payloadType),
+            NativeUmkaTypeKind.Fiber => throw new NotSupportedException(
+                "Umka any payloads containing fiber values cannot be retained or invoked from C# because the native runtime does not expose host-side fiber resume ownership semantics."),
+            _ => throw new NotSupportedException(
+                $"Umka any payload type '{payloadType.TypeName}' is not supported by UmkaSharp.")
+        };
+
+        return UmkaAnyValue.FromInspected(payloadType, payload);
+    }
+
+    internal void ReleaseNativeValue(UmkaNativeValue value)
+    {
+        CheckUsable();
+        if (_nativeValues.Remove(value.Handle))
+            value.DisposeFromRuntime();
+    }
+
+    private UmkaValue RetainAnyPayload(UmkaNativeValue anyValue, UmkaTypeInfo payloadType)
+    {
+        var status = NativeMethods.NativeValueAnyRetainPayload(Handle, anyValue.Handle, out var payloadHandle);
+        if (status != 0 || payloadHandle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                $"Umka any payload type '{payloadType.TypeName}' could not be retained as a native Umka value.");
+        }
+
+        return UmkaValue.FromNativeValue(AdoptNativeValue(payloadHandle, payloadType));
+    }
+
+    private static UmkaValue CreateAnyCharacterPayload(IntPtr anyHandle)
+    {
+        var value = NativeMethods.NativeValueAnyGetPayloadUInt(anyHandle);
+        if (value > byte.MaxValue)
+            throw new OverflowException($"Umka any char payload value {value} is outside the Umka char range.");
+
+        return UmkaValue.From((char)value);
+    }
+
+    private static UmkaTypeInfo CreateAnyPayloadTypeInfo(IntPtr anyHandle, NativeUmkaTypeKind nativeKind)
+    {
+        var isEnum = NativeMethods.NativeValueAnyGetPayloadIsEnum(anyHandle) != 0;
+        return UmkaTypeInfoFactory.Create(
+            nativeKind,
+            NativeMethods.NativeValueAnyGetPayloadTypeName(anyHandle).ToManagedString(),
+            NativeMethods.NativeValueAnyGetPayloadSize(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadItemCount(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadHasReferences(anyHandle) != 0,
+            isEnum,
+            isEnum ? GetAnyPayloadEnumMembers(anyHandle) : Array.Empty<UmkaEnumMemberInfo>(),
+            NativeMethods.NativeValueAnyGetPayloadElementKind(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadElementTypeName(anyHandle).ToManagedString(),
+            NativeMethods.NativeValueAnyGetPayloadElementSize(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadElementHasReferences(anyHandle) != 0,
+            NativeMethods.NativeValueAnyGetPayloadNestedElementKind(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadNestedElementTypeName(anyHandle).ToManagedString(),
+            NativeMethods.NativeValueAnyGetPayloadNestedElementSize(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadNestedElementHasReferences(anyHandle) != 0,
+            NativeMethods.NativeValueAnyGetPayloadMapKeyKind(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadMapKeyTypeName(anyHandle).ToManagedString(),
+            NativeMethods.NativeValueAnyGetPayloadMapKeySize(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadMapKeyHasReferences(anyHandle) != 0,
+            NativeMethods.NativeValueAnyGetPayloadMapValueKind(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadMapValueTypeName(anyHandle).ToManagedString(),
+            NativeMethods.NativeValueAnyGetPayloadMapValueSize(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadMapValueHasReferences(anyHandle) != 0,
+            NativeMethods.NativeValueAnyGetPayloadMapValueElementKind(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadMapValueElementTypeName(anyHandle).ToManagedString(),
+            NativeMethods.NativeValueAnyGetPayloadMapValueElementSize(anyHandle),
+            NativeMethods.NativeValueAnyGetPayloadMapValueElementHasReferences(anyHandle) != 0,
+            NativeMethods.NativeValueAnyGetPayloadIsVariadicParameterList(anyHandle) != 0);
+    }
+
+    private static UmkaEnumMemberInfo[] GetAnyPayloadEnumMembers(IntPtr anyHandle)
+    {
+        var count = NativeMethods.NativeValueAnyGetPayloadEnumMemberCount(anyHandle);
+        if (count <= 0)
+            return Array.Empty<UmkaEnumMemberInfo>();
+
+        var members = new UmkaEnumMemberInfo[count];
+        for (var i = 0; i < members.Length; i++)
+        {
+            members[i] = new UmkaEnumMemberInfo(
+                NativeMethods.NativeValueAnyGetPayloadEnumMemberName(anyHandle, i).ToManagedString() ?? "unknown",
+                NativeMethods.NativeValueAnyGetPayloadEnumMemberSignedValue(anyHandle, i),
+                NativeMethods.NativeValueAnyGetPayloadEnumMemberUnsignedValue(anyHandle, i));
+        }
+
+        return members;
+    }
+
     private T GetHostObjectCore<T>(IntPtr handleAddress)
     {
         CheckUsable();
@@ -1004,6 +1223,10 @@ public sealed class UmkaRuntime : IDisposable
         _disposed = true;
         if (Handle != IntPtr.Zero)
         {
+            foreach (var nativeValue in _nativeValues.Values)
+                nativeValue.DisposeFromRuntime();
+            _nativeValues.Clear();
+
             NativeMethods.ClearWarningCallback(Handle);
 
             // Umka's free path expects compile-time VM initialization for some sources.

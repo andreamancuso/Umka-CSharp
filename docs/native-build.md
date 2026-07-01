@@ -16,13 +16,13 @@ cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
 cmake --build native/build --config Release
 ```
 
-CI does not build against a moving Umka branch. `.github/workflows/ci.yml` pins `vtereshkov/umka-lang` through `UMKA_REF`:
+CI does not build against a moving Umka branch. `.github/workflows/ci.yml` pins `andreamancuso/umka-lang` through `UMKA_REF`:
 
 ```text
-a66d5bf830130dd5435b4661ec15bfd34c11a08f
+4cbf92ac216be0e4088ddc61aa0589df43ed066d
 ```
 
-When changing the Umka baseline, first update and test the local `C:\dev\umka-lang` checkout, then update `UMKA_REF` in the workflow to the verified commit.
+When changing the Umka baseline, first update and test the local `C:\dev\umka-lang` checkout, push the public fork, then update `UMKA_REF` in the workflow to the verified fork commit.
 
 On Windows with Visual Studio 2022 but no CMake on `PATH`, use:
 

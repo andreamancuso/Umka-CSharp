@@ -32,6 +32,10 @@ if (-not $notices.Contains('Upstream: <https://github.com/vtereshkov/umka-lang>'
     throw "Third-party notices must identify the upstream Umka repository."
 }
 
+if (-not $notices.Contains('Selected source: <https://github.com/andreamancuso/umka-lang>')) {
+    throw "Third-party notices must identify the selected Umka source repository used for CI/package builds."
+}
+
 if (-not $notices.Contains('License: BSD 2-Clause License')) {
     throw "Third-party notices must identify Umka as BSD 2-Clause licensed."
 }

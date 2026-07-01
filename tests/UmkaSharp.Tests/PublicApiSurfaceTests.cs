@@ -233,14 +233,37 @@ public sealed class PublicApiSurfaceTests
     }
 
     private const string ExpectedPublicApi = """
+class UmkaSharp.UmkaAnyValue
+  property System.Boolean IsNull { get }
+  property UmkaSharp.UmkaAnyValue Null { get }
+  property UmkaSharp.UmkaValue Payload { get }
+  property UmkaSharp.UmkaTypeInfo? PayloadType { get }
+  method UmkaSharp.UmkaAnyValue From(System.Boolean value)
+  method UmkaSharp.UmkaAnyValue From(System.Byte value)
+  method UmkaSharp.UmkaAnyValue From(System.Char value)
+  method UmkaSharp.UmkaAnyValue From(System.Double value)
+  method UmkaSharp.UmkaAnyValue From(System.Int16 value)
+  method UmkaSharp.UmkaAnyValue From(System.Int32 value)
+  method UmkaSharp.UmkaAnyValue From(System.Int64 value)
+  method UmkaSharp.UmkaAnyValue From(System.SByte value)
+  method UmkaSharp.UmkaAnyValue From(System.Single value)
+  method UmkaSharp.UmkaAnyValue From(System.String? value)
+  method UmkaSharp.UmkaAnyValue From(System.UInt16 value)
+  method UmkaSharp.UmkaAnyValue From(System.UInt32 value)
+  method UmkaSharp.UmkaAnyValue From(System.UInt64 value)
+  method UmkaSharp.UmkaAnyValue From(UmkaSharp.UmkaNativeValue value)
+  method UmkaSharp.UmkaAnyValue From(UmkaSharp.UmkaValue payload)
+  method UmkaSharp.UmkaValue ToValue()
 struct UmkaSharp.UmkaCallFrame
   property System.Int32 ParameterCount { get }
   property System.Collections.Generic.IReadOnlyList<UmkaSharp.UmkaTypeInfo> ParameterTypes { get }
   property UmkaSharp.UmkaTypeInfo ResultType { get }
+  method System.Boolean CanReadArgumentAsAny(System.Int32 index)
   method System.Boolean CanReadArgumentAsArray<TElement>(System.Int32 index, System.Int32 length) where TElement : struct
   method System.Boolean CanReadArgumentAsDynamicArray<TElement>(System.Int32 index) where TElement : struct
   method System.Boolean CanReadArgumentAsDynamicArrayValueMap<TKey, TElement>(System.Int32 index) where TKey : struct where TElement : struct
   method System.Boolean CanReadArgumentAsMap<TKey, TValue>(System.Int32 index) where TKey : struct where TValue : struct
+  method System.Boolean CanReadArgumentAsNativeValue(System.Int32 index)
   method System.Boolean CanReadArgumentAsNestedDynamicArray<TElement>(System.Int32 index) where TElement : struct
   method System.Boolean CanReadArgumentAsNestedStringArray(System.Int32 index)
   method System.Boolean CanReadArgumentAsScalar<T>(System.Int32 index)
@@ -255,6 +278,7 @@ struct UmkaSharp.UmkaCallFrame
   method System.Boolean CanReadArgumentAsValue(System.Int32 index)
   method System.Boolean CanReadArgumentAsWeakPointer(System.Int32 index)
   method System.Boolean CanReturn(UmkaSharp.UmkaValue value)
+  method UmkaSharp.UmkaAnyValue GetAny(System.Int32 index)
   method TElement[] GetArray<TElement>(System.Int32 index, System.Int32 length) where TElement : struct
   method System.Boolean GetBoolean(System.Int32 index)
   method System.Byte GetByte(System.Int32 index)
@@ -268,6 +292,7 @@ struct UmkaSharp.UmkaCallFrame
   method System.Int32 GetInt32(System.Int32 index)
   method System.Int64 GetInt64(System.Int32 index)
   method Dictionary<TKey, TValue> GetMap<TKey, TValue>(System.Int32 index) where TKey : struct where TValue : struct
+  method UmkaSharp.UmkaNativeValue GetNativeValue(System.Int32 index)
   method TElement[][] GetNestedDynamicArray<TElement>(System.Int32 index) where TElement : struct
   method System.String?[][] GetNestedStringArray(System.Int32 index)
   method System.IntPtr GetPointer(System.Int32 index)
@@ -288,12 +313,14 @@ struct UmkaSharp.UmkaCallFrame
   method System.UInt64 GetUInt64(System.Int32 index)
   method UmkaSharp.UmkaValue GetValue(System.Int32 index)
   method System.UInt64 GetWeakPointer(System.Int32 index)
+  method System.Boolean TryGetAny(System.Int32 index, [NotNullWhen(true)] out UmkaSharp.UmkaAnyValue? value)
   method System.Boolean TryGetArray<TElement>(System.Int32 index, System.Int32 length, [NotNullWhen(true)] out TElement[]? value) where TElement : struct
   method System.Boolean TryGetDynamicArray<TElement>(System.Int32 index, [NotNullWhen(true)] out TElement[]? value) where TElement : struct
   method System.Boolean TryGetDynamicArrayValueMap<TKey, TElement>(System.Int32 index, [NotNullWhen(true)] out Dictionary<TKey, TElement[]>? value) where TKey : struct where TElement : struct
   method System.Boolean TryGetEnum<TEnum>(System.Int32 index, out TEnum value) where TEnum : struct, System.Enum
   method System.Boolean TryGetHostObject<T>(System.Int32 index, [NotNullWhen(true)] out T? target)
   method System.Boolean TryGetMap<TKey, TValue>(System.Int32 index, [NotNullWhen(true)] out Dictionary<TKey, TValue>? value) where TKey : struct where TValue : struct
+  method System.Boolean TryGetNativeValue(System.Int32 index, [NotNullWhen(true)] out UmkaSharp.UmkaNativeValue? value)
   method System.Boolean TryGetNestedDynamicArray<TElement>(System.Int32 index, [NotNullWhen(true)] out TElement[][]? value) where TElement : struct
   method System.Boolean TryGetNestedStringArray(System.Int32 index, [NotNullWhen(true)] out System.String?[][]? value)
   method System.Boolean TryGetScalar<T>(System.Int32 index, [MaybeNull] out T? value)
@@ -334,6 +361,7 @@ class UmkaSharp.UmkaException
   property UmkaSharp.UmkaError Error { get }
 class UmkaSharp.UmkaFunction
   property System.Int32 DefaultParameterCount { get }
+  property System.Boolean IsRetainedCallable { get }
   property System.String? ModuleName { get }
   property System.String Name { get }
   property System.Int32 ParameterCount { get }
@@ -341,6 +369,8 @@ class UmkaSharp.UmkaFunction
   property System.String QualifiedName { get }
   property System.Int32 RequiredParameterCount { get }
   property UmkaSharp.UmkaTypeInfo ResultType { get }
+  method UmkaSharp.UmkaAnyValue CallAny(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments)
+  method UmkaSharp.UmkaAnyValue CallAny(params UmkaSharp.UmkaValue[] arguments)
   method TElement[] CallArray<TElement>(System.Int32 length, System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments) where TElement : struct
   method TElement[] CallArray<TElement>(System.Int32 length, params UmkaSharp.UmkaValue[] arguments) where TElement : struct
   method System.Boolean CallBoolean(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments)
@@ -367,6 +397,8 @@ class UmkaSharp.UmkaFunction
   method System.Int64 CallInt64(params UmkaSharp.UmkaValue[] arguments)
   method Dictionary<TKey, TValue> CallMap<TKey, TValue>(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments) where TKey : struct where TValue : struct
   method Dictionary<TKey, TValue> CallMap<TKey, TValue>(params UmkaSharp.UmkaValue[] arguments) where TKey : struct where TValue : struct
+  method UmkaSharp.UmkaNativeValue CallNativeValue(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments)
+  method UmkaSharp.UmkaNativeValue CallNativeValue(params UmkaSharp.UmkaValue[] arguments)
   method TElement[][] CallNestedDynamicArray<TElement>(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments) where TElement : struct
   method TElement[][] CallNestedDynamicArray<TElement>(params UmkaSharp.UmkaValue[] arguments) where TElement : struct
   method System.String?[][] CallNestedStringArray(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments)
@@ -411,10 +443,12 @@ class UmkaSharp.UmkaFunction
   method System.UInt64 CallWeakPointer(params UmkaSharp.UmkaValue[] arguments)
   method System.Boolean CanCallWith(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments)
   method System.Boolean CanCallWith(params UmkaSharp.UmkaValue[] arguments)
+  method System.Boolean CanReadResultAsAny()
   method System.Boolean CanReadResultAsArray<TElement>(System.Int32 length) where TElement : struct
   method System.Boolean CanReadResultAsDynamicArray<TElement>() where TElement : struct
   method System.Boolean CanReadResultAsDynamicArrayValueMap<TKey, TElement>() where TKey : struct where TElement : struct
   method System.Boolean CanReadResultAsMap<TKey, TValue>() where TKey : struct where TValue : struct
+  method System.Boolean CanReadResultAsNativeValue()
   method System.Boolean CanReadResultAsNestedDynamicArray<TElement>() where TElement : struct
   method System.Boolean CanReadResultAsNestedStringArray()
   method System.Boolean CanReadResultAsScalar<T>()
@@ -428,6 +462,8 @@ class UmkaSharp.UmkaFunction
   method System.Boolean CanReadResultAsStruct<T>() where T : struct
   method System.Boolean CanReadResultAsValue()
   method System.Boolean CanReadResultAsWeakPointer()
+  method System.Boolean TryCallAny(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out UmkaSharp.UmkaAnyValue? value)
+  method System.Boolean TryCallAny([NotNullWhen(true)] out UmkaSharp.UmkaAnyValue? value, params UmkaSharp.UmkaValue[] arguments)
   method System.Boolean TryCallArray<TElement>(System.Int32 length, System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out TElement[]? value) where TElement : struct
   method System.Boolean TryCallArray<TElement>(System.Int32 length, [NotNullWhen(true)] out TElement[]? value, params UmkaSharp.UmkaValue[] arguments) where TElement : struct
   method System.Boolean TryCallDynamicArray<TElement>(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out TElement[]? value) where TElement : struct
@@ -440,6 +476,8 @@ class UmkaSharp.UmkaFunction
   method System.Boolean TryCallHostObject<T>([NotNullWhen(true)] out T? target, params UmkaSharp.UmkaValue[] arguments)
   method System.Boolean TryCallMap<TKey, TValue>([NotNullWhen(true)] out Dictionary<TKey, TValue>? value, params UmkaSharp.UmkaValue[] arguments) where TKey : struct where TValue : struct
   method System.Boolean TryCallMap<TKey, TValue>(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out Dictionary<TKey, TValue>? value) where TKey : struct where TValue : struct
+  method System.Boolean TryCallNativeValue(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out UmkaSharp.UmkaNativeValue? value)
+  method System.Boolean TryCallNativeValue([NotNullWhen(true)] out UmkaSharp.UmkaNativeValue? value, params UmkaSharp.UmkaValue[] arguments)
   method System.Boolean TryCallNestedDynamicArray<TElement>(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out TElement[][]? value) where TElement : struct
   method System.Boolean TryCallNestedDynamicArray<TElement>([NotNullWhen(true)] out TElement[][]? value, params UmkaSharp.UmkaValue[] arguments) where TElement : struct
   method System.Boolean TryCallNestedStringArray(System.ReadOnlySpan<UmkaSharp.UmkaValue> arguments, [NotNullWhen(true)] out System.String?[][]? value)
@@ -476,12 +514,23 @@ class UmkaSharp.UmkaHostHandle
   method T GetTarget<T>()
   method UmkaSharp.UmkaValue ToValue()
   method System.Boolean TryGetTarget<T>([NotNullWhen(true)] out T? target)
+class UmkaSharp.UmkaNativeValue
+  property System.Boolean IsCallable { get }
+  property System.Boolean IsDisposed { get }
+  property UmkaSharp.UmkaTypeInfo Type { get }
+  method UmkaSharp.UmkaAnyValue AsAny()
+  method UmkaSharp.UmkaFunction AsCallable()
+  method System.Void Dispose()
+  method UmkaSharp.UmkaValue ToValue()
+  method System.Boolean TryAsAny([NotNullWhen(true)] out UmkaSharp.UmkaAnyValue? value)
+  method System.Boolean TryAsCallable([NotNullWhen(true)] out UmkaSharp.UmkaFunction? function)
 class UmkaSharp.UmkaRuntime
   property System.Collections.Generic.IReadOnlyList<System.String> Arguments { get }
   property System.Boolean FileSystemEnabled { get }
   property System.Boolean ImplementationLibrariesEnabled { get }
   property System.Boolean IsAlive { get }
   property System.Boolean IsDisposed { get }
+  property System.Boolean IsInterruptRequested { get }
   property System.Exception? LastCallbackException { get }
   property System.Collections.Generic.IReadOnlyList<System.String> RegisteredCallbackNames { get }
   property System.Collections.Generic.IReadOnlyList<System.String> RegisteredModuleNames { get }
@@ -492,6 +541,7 @@ class UmkaSharp.UmkaRuntime
   method System.Void AddModule(System.String fileName, System.String source)
   method System.Void AddModuleFromFile(System.String fileName)
   method System.Void AddModuleFromFile(System.String moduleName, System.String fileName)
+  method System.Void ClearInterrupt()
   method System.Void Compile()
   method UmkaSharp.UmkaRuntime CompileFile(System.String fileName, UmkaSharp.UmkaRuntimeOptions? options = null, System.Action<UmkaSharp.UmkaRuntime>? configure = null)
   method UmkaSharp.UmkaRuntime CompileSource(System.String source, System.String fileName = "main.um", System.Int32 stackSize = 1048576, System.Boolean fileSystemEnabled = false, System.Boolean implementationLibrariesEnabled = false, System.Collections.Generic.IReadOnlyList<System.String>? arguments = null, System.Action<UmkaSharp.UmkaRuntime>? configure = null)
@@ -510,6 +560,7 @@ class UmkaSharp.UmkaRuntime
   method UmkaSharp.UmkaError GetLastError()
   method UmkaSharp.UmkaCallback Register(System.String name, UmkaSharp.UmkaCallback.CallbackFunc callback)
   method UmkaSharp.UmkaCallback RegisterVoid(System.String name, System.Action<UmkaSharp.UmkaCallFrame> callback)
+  method System.Void RequestInterrupt(System.String? message = null)
   method System.Void Run()
   method System.Void RunSource(System.String source, System.String fileName = "main.um", System.Int32 stackSize = 1048576, System.Boolean fileSystemEnabled = false, System.Boolean implementationLibrariesEnabled = false, System.Collections.Generic.IReadOnlyList<System.String>? arguments = null, System.Action<UmkaSharp.UmkaRuntime>? configure = null)
   method System.Void RunSource(System.String source, System.String fileName, UmkaSharp.UmkaRuntimeOptions? options, System.Action<UmkaSharp.UmkaRuntime>? configure = null)
@@ -549,6 +600,8 @@ class UmkaSharp.UmkaTypeInfo
   property System.Collections.Generic.IReadOnlyList<UmkaSharp.UmkaEnumMemberInfo> EnumMembers { get, init }
   property System.Boolean HasReferences { get, init }
   property System.Boolean IsAggregate { get }
+  property System.Boolean IsAny { get }
+  property System.Boolean IsCallable { get }
   property System.Boolean IsDeferred { get }
   property System.Boolean IsEnum { get, init }
   property System.Boolean IsScalar { get }
@@ -591,6 +644,7 @@ class UmkaSharp.UmkaTypeInfo
   method System.Boolean CanReadAsStruct<T>() where T : struct
   method System.Boolean CanReadAsValue()
   method System.Boolean CanReadAsWeakPointer()
+  method System.Boolean CanRetainAsNativeValue()
   method System.Void Deconstruct(out UmkaSharp.UmkaTypeKind Kind, out System.String TypeName)
 enum UmkaSharp.UmkaTypeKind
   const UmkaSharp.UmkaTypeKind Boolean = 5
@@ -616,6 +670,7 @@ struct UmkaSharp.UmkaValue
   property UmkaSharp.UmkaValueKind Kind { get }
   property System.Object? Value { get }
   property UmkaSharp.UmkaValue Void { get }
+  method UmkaSharp.UmkaAnyValue AsAny()
   method System.Boolean AsBoolean()
   method System.Byte AsByte()
   method System.Char AsChar()
@@ -625,6 +680,7 @@ struct UmkaSharp.UmkaValue
   method System.Int16 AsInt16()
   method System.Int32 AsInt32()
   method System.Int64 AsInt64()
+  method UmkaSharp.UmkaNativeValue AsNativeValue()
   method TElement[][] AsNestedDynamicArray<TElement>() where TElement : struct
   method System.String?[][] AsNestedStringArray()
   method System.IntPtr AsPointer()
@@ -652,6 +708,7 @@ struct UmkaSharp.UmkaValue
   method UmkaSharp.UmkaValue From(System.UInt16 value)
   method UmkaSharp.UmkaValue From(System.UInt32 value)
   method UmkaSharp.UmkaValue From(System.UInt64 value)
+  method UmkaSharp.UmkaValue FromAny(UmkaSharp.UmkaAnyValue value)
   method UmkaSharp.UmkaValue FromDynamicArray(System.ReadOnlySpan<System.String?> values)
   method UmkaSharp.UmkaValue FromDynamicArray(System.Span<System.String?> values)
   method UmkaSharp.UmkaValue FromDynamicArray(params System.String?[] values)
@@ -660,6 +717,8 @@ struct UmkaSharp.UmkaValue
   method UmkaSharp.UmkaValue FromDynamicArray<TElement>(params TElement[] values) where TElement : struct
   method UmkaSharp.UmkaValue FromEnum<TEnum>(TEnum value) where TEnum : struct, System.Enum
   method UmkaSharp.UmkaValue FromHostHandle(UmkaSharp.UmkaHostHandle handle)
+  method UmkaSharp.UmkaValue FromMap<TKey, TValue>(IReadOnlyDictionary<TKey, TValue> values) where TKey : struct where TValue : struct
+  method UmkaSharp.UmkaValue FromNativeValue(UmkaSharp.UmkaNativeValue value)
   method UmkaSharp.UmkaValue FromNestedDynamicArray(System.ReadOnlySpan<System.String?[]> values)
   method UmkaSharp.UmkaValue FromNestedDynamicArray(System.Span<System.String?[]> values)
   method UmkaSharp.UmkaValue FromNestedDynamicArray(params System.String?[][] values)
@@ -671,10 +730,15 @@ struct UmkaSharp.UmkaValue
   method UmkaSharp.UmkaValue FromStaticArray<TElement>(ReadOnlySpan<TElement> values) where TElement : struct
   method UmkaSharp.UmkaValue FromStaticArray<TElement>(Span<TElement> values) where TElement : struct
   method UmkaSharp.UmkaValue FromStaticArray<TElement>(params TElement[] values) where TElement : struct
+  method UmkaSharp.UmkaValue FromStringKeyMap<TValue>(IReadOnlyDictionary<System.String, TValue> values) where TValue : struct
+  method UmkaSharp.UmkaValue FromStringMap(System.Collections.Generic.IReadOnlyDictionary<System.String, System.String?> values)
+  method UmkaSharp.UmkaValue FromStringValueMap<TKey>(IReadOnlyDictionary<TKey, System.String> values) where TKey : struct
   method UmkaSharp.UmkaValue FromStruct<T>(T value) where T : struct
   method UmkaSharp.UmkaValue FromWeakPointer(System.UInt64 value)
+  method System.Boolean TryAsAny([NotNullWhen(true)] out UmkaSharp.UmkaAnyValue? value)
   method System.Boolean TryAsDynamicArray<TElement>([NotNullWhen(true)] out TElement[]? value) where TElement : struct
   method System.Boolean TryAsEnum<TEnum>(out TEnum value) where TEnum : struct, System.Enum
+  method System.Boolean TryAsNativeValue([NotNullWhen(true)] out UmkaSharp.UmkaNativeValue? value)
   method System.Boolean TryAsNestedDynamicArray<TElement>([NotNullWhen(true)] out TElement[][]? value) where TElement : struct
   method System.Boolean TryAsNestedStringArray([NotNullWhen(true)] out System.String?[][]? value)
   method System.Boolean TryAsScalar<T>([MaybeNull] out T? value)
@@ -688,6 +752,7 @@ struct UmkaSharp.UmkaValue
   method System.Boolean TryFromDynamicArray<TElement>(ReadOnlySpan<TElement> values, out UmkaSharp.UmkaValue result) where TElement : struct
   method System.Boolean TryFromDynamicArray<TElement>(Span<TElement> values, out UmkaSharp.UmkaValue result) where TElement : struct
   method System.Boolean TryFromDynamicArray<TElement>(TElement[]? values, out UmkaSharp.UmkaValue result) where TElement : struct
+  method System.Boolean TryFromMap<TKey, TValue>(IReadOnlyDictionary<TKey, TValue>? values, out UmkaSharp.UmkaValue result) where TKey : struct where TValue : struct
   method System.Boolean TryFromNestedDynamicArray(System.ReadOnlySpan<System.String?[]> values, out UmkaSharp.UmkaValue result)
   method System.Boolean TryFromNestedDynamicArray(System.Span<System.String?[]> values, out UmkaSharp.UmkaValue result)
   method System.Boolean TryFromNestedDynamicArray(System.String?[][]? values, out UmkaSharp.UmkaValue result)
@@ -698,11 +763,17 @@ struct UmkaSharp.UmkaValue
   method System.Boolean TryFromStaticArray<TElement>(ReadOnlySpan<TElement> values, out UmkaSharp.UmkaValue result) where TElement : struct
   method System.Boolean TryFromStaticArray<TElement>(Span<TElement> values, out UmkaSharp.UmkaValue result) where TElement : struct
   method System.Boolean TryFromStaticArray<TElement>(TElement[]? values, out UmkaSharp.UmkaValue result) where TElement : struct
+  method System.Boolean TryFromStringKeyMap<TValue>(IReadOnlyDictionary<System.String, TValue>? values, out UmkaSharp.UmkaValue result) where TValue : struct
+  method System.Boolean TryFromStringMap(System.Collections.Generic.IReadOnlyDictionary<System.String, System.String?>? values, out UmkaSharp.UmkaValue result)
+  method System.Boolean TryFromStringValueMap<TKey>(IReadOnlyDictionary<TKey, System.String>? values, out UmkaSharp.UmkaValue result) where TKey : struct
   method System.Boolean TryFromStruct<T>(T value, out UmkaSharp.UmkaValue result) where T : struct
 enum UmkaSharp.UmkaValueKind
+  const UmkaSharp.UmkaValueKind Any = 13
   const UmkaSharp.UmkaValueKind Bool = 4
   const UmkaSharp.UmkaValueKind DynamicArray = 9
   const UmkaSharp.UmkaValueKind Int = 1
+  const UmkaSharp.UmkaValueKind Map = 11
+  const UmkaSharp.UmkaValueKind NativeValue = 12
   const UmkaSharp.UmkaValueKind Pointer = 6
   const UmkaSharp.UmkaValueKind Real = 3
   const UmkaSharp.UmkaValueKind StaticArray = 7

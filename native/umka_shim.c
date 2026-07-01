@@ -35,6 +35,51 @@ typedef struct
     const Type *type;
 } UshimFuncContext;
 
+static UmkaStackSlot *ushim_param(UmkaStackSlot *params, int index);
+static UmkaStackSlot *ushim_result(UmkaFuncContext *function);
+static const Type *ushim_context_get_parameter_type(UmkaFuncContext *function, int index);
+static const Type *ushim_context_get_result_type(UmkaFuncContext *function);
+static const Type *ushim_callback_get_parameter_type(UmkaStackSlot *params, int index);
+static const Type *ushim_callback_get_result_type(UmkaStackSlot *params, UmkaStackSlot *result);
+static const Type *ushim_type_element_type(const Type *type);
+static const char *ushim_type_name(const Type *type);
+static const Type *ushim_enum_type(const Type *type);
+static const EnumConst *ushim_enum_member(const Type *type, int index);
+static int ushim_type_element_kind(const Type *type);
+static int ushim_type_element_size(const Type *type);
+static int ushim_type_element_has_references(const Type *type);
+static const char *ushim_type_element_name(const Type *type);
+static int ushim_type_nested_dynarray_element_kind(const Type *type);
+static int ushim_type_nested_dynarray_element_size(const Type *type);
+static int ushim_type_nested_dynarray_element_has_references(const Type *type);
+static const char *ushim_type_nested_dynarray_element_name(const Type *type);
+static int ushim_type_map_key_kind(const Type *type);
+static int ushim_type_map_key_size(const Type *type);
+static int ushim_type_map_key_has_references(const Type *type);
+static const char *ushim_type_map_key_name(const Type *type);
+static int ushim_type_map_value_kind(const Type *type);
+static int ushim_type_map_value_size(const Type *type);
+static int ushim_type_map_value_has_references(const Type *type);
+static const char *ushim_type_map_value_name(const Type *type);
+static int ushim_type_map_value_element_kind(const Type *type);
+static int ushim_type_map_value_element_size(const Type *type);
+static int ushim_type_map_value_element_has_references(const Type *type);
+static const char *ushim_type_map_value_element_name(const Type *type);
+static int ushim_type_is_variadic_parameter_list(const Type *type);
+static int ushim_type_uses_indirect_value_slot(const Type *type);
+static const Type *ushim_callable_function_type(const Type *type);
+static UmkaStackSlot ushim_value_from_storage(const Type *type, UmkaStackSlot *storage);
+static void *ushim_callback_result_assignment_target(const Type *type, UmkaStackSlot *slot);
+static int ushim_native_value_assign_to_storage(const Type *type, void *dest, UmkaStackSlot value);
+static int ushim_native_value_assign_to_interface_storage(Umka *umka, const Type *target, void *dest, const UmkaHostHandle *handle);
+static int ushim_native_value_type_matches(const Type *target, const UmkaHostHandle *handle);
+static int ushim_native_value_retain(Umka *umka, const Type *type, UmkaStackSlot value, UmkaHostHandle **handle);
+static int ushim_type_is_any(const Type *type);
+static int ushim_type_is_non_empty_interface(const Type *type);
+static UmkaAny *ushim_native_value_any_ptr(const UmkaHostHandle *handle);
+static const Type *ushim_native_value_any_payload_type(const UmkaHostHandle *handle, UmkaStackSlot *payload);
+static int ushim_any_assign_to_storage(Umka *umka, const Type *targetType, void *dest, const Type *payloadType, UmkaStackSlot payload);
+
 static int ushim_status(Umka *umka)
 {
     if (!umka)
@@ -127,6 +172,21 @@ USHIM_EXPORT int ushim_run(Umka *umka)
 USHIM_EXPORT int ushim_alive(Umka *umka)
 {
     return umka && umkaAlive(umka);
+}
+
+USHIM_EXPORT void ushim_request_interrupt(Umka *umka, const char *message)
+{
+    umkaRequestInterrupt(umka, message);
+}
+
+USHIM_EXPORT void ushim_clear_interrupt(Umka *umka)
+{
+    umkaClearInterrupt(umka);
+}
+
+USHIM_EXPORT int ushim_interrupt_requested(Umka *umka)
+{
+    return umkaInterruptRequested(umka) ? 1 : 0;
 }
 
 typedef struct
@@ -234,6 +294,541 @@ USHIM_EXPORT int ushim_call(Umka *umka, UmkaFuncContext *function)
     return umkaCall(umka, function);
 }
 
+USHIM_EXPORT int ushim_context_call_retain_result(Umka *umka, UmkaFuncContext *function, UmkaHostHandle **handle)
+{
+    if (handle)
+        *handle = NULL;
+
+    const Type *type = ushim_context_get_result_type(function);
+    if (!umka || !function || !type || type->kind == TYPE_VOID || !handle)
+        return 1;
+
+    void *buffer = NULL;
+    const int usesBuffer = ushim_type_uses_indirect_value_slot(type);
+    if (usesBuffer)
+    {
+        buffer = calloc(1, type->size > 0 ? (size_t)type->size : 1);
+        if (!buffer)
+            return 1;
+
+        function->result->ptrVal = buffer;
+    }
+
+    int status = umkaCall(umka, function);
+    if (status == 0)
+    {
+        UmkaStackSlot value = {0};
+        if (usesBuffer)
+            value.ptrVal = buffer;
+        else
+            value = *ushim_result(function);
+        status = ushim_native_value_retain(umka, type, value, handle);
+    }
+
+    if (usesBuffer)
+    {
+        (void)umkaReleaseHostValue(umka, buffer, (const UmkaType *)type);
+        free(buffer);
+        function->result->ptrVal = NULL;
+    }
+
+    return status;
+}
+
+USHIM_EXPORT int ushim_native_value_callable_valid(UmkaHostHandle *handle)
+{
+    if (!umkaHostHandleValid(handle))
+        return 0;
+
+    const Type *type = (const Type *)umkaGetHostHandleType(handle);
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    return umkaCallableValid((const UmkaType *)type, value) ? 1 : 0;
+}
+
+USHIM_EXPORT int ushim_native_value_make_callable_context(Umka *umka, UmkaHostHandle *handle, UmkaFuncContext *function)
+{
+    if (!umka || !function || !umkaHostHandleValid(handle))
+        return 1;
+
+    const Type *type = (const Type *)umkaGetHostHandleType(handle);
+    const Type *fnType = ushim_callable_function_type(type);
+    if (!fnType)
+        return 1;
+
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    if (!umkaMakeCallableContext(umka, (const UmkaType *)type, value, function))
+        return 1;
+
+    ((UshimFuncContext *)function)->type = fnType;
+    return 0;
+}
+
+USHIM_EXPORT int ushim_callable_call(Umka *umka, UmkaHostHandle *handle, UmkaFuncContext *function)
+{
+    if (!umka || !function || !umkaHostHandleValid(handle))
+        return 1;
+
+    const Type *type = (const Type *)umkaGetHostHandleType(handle);
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    return umkaCallCallable(umka, (const UmkaType *)type, value, function);
+}
+
+USHIM_EXPORT int ushim_callable_call_retain_result(Umka *umka, UmkaHostHandle *callable, UmkaFuncContext *function, UmkaHostHandle **handle)
+{
+    if (handle)
+        *handle = NULL;
+
+    const Type *type = ushim_context_get_result_type(function);
+    if (!umka || !function || !type || type->kind == TYPE_VOID || !handle || !umkaHostHandleValid(callable))
+        return 1;
+
+    void *buffer = NULL;
+    const int usesBuffer = ushim_type_uses_indirect_value_slot(type);
+    if (usesBuffer)
+    {
+        buffer = calloc(1, type->size > 0 ? (size_t)type->size : 1);
+        if (!buffer)
+            return 1;
+
+        function->result->ptrVal = buffer;
+    }
+
+    const Type *callableType = (const Type *)umkaGetHostHandleType(callable);
+    UmkaStackSlot callableValue = umkaGetHostHandleValue(callable);
+    int status = umkaCallCallable(umka, (const UmkaType *)callableType, callableValue, function);
+    if (status == 0)
+    {
+        UmkaStackSlot value = {0};
+        if (usesBuffer)
+            value.ptrVal = buffer;
+        else
+            value = *ushim_result(function);
+        status = ushim_native_value_retain(umka, type, value, handle);
+    }
+
+    if (usesBuffer)
+    {
+        (void)umkaReleaseHostValue(umka, buffer, (const UmkaType *)type);
+        free(buffer);
+        function->result->ptrVal = NULL;
+    }
+
+    return status;
+}
+
+USHIM_EXPORT int ushim_context_set_arg_native_value(
+    Umka *umka,
+    UmkaFuncContext *function,
+    int index,
+    UmkaHostHandle *handle)
+{
+    UmkaStackSlot *slot = ushim_param(function ? function->params : NULL, index);
+    const Type *type = ushim_context_get_parameter_type(function, index);
+    if (!umka || !slot || !type || !umkaHostHandleValid(handle))
+        return 1;
+
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    if (ushim_native_value_type_matches(type, handle))
+        return ushim_native_value_assign_to_storage(type, slot, value);
+
+    return ushim_native_value_assign_to_interface_storage(umka, type, slot, handle);
+}
+
+typedef struct
+{
+    UmkaFuncContext *function;
+    int index;
+    int payloadKind;
+    UmkaStackSlot payload;
+    const char *stringValue;
+    UmkaHostHandle *handle;
+} SetAnyArgumentData;
+
+static const Type *ushim_predecl_any_payload_type(Umka *umka, int kind)
+{
+    if (!umka)
+        return NULL;
+
+    switch (kind)
+    {
+        case TYPE_INT:
+            return umka->types.predecl.intType;
+        case TYPE_UINT:
+            return umka->types.predecl.uintType;
+        case TYPE_CHAR:
+            return umka->types.predecl.charType;
+        case TYPE_REAL:
+            return umka->types.predecl.realType;
+        case TYPE_BOOL:
+            return umka->types.predecl.boolType;
+        case TYPE_STR:
+            return umka->types.predecl.strType;
+        case TYPE_NONE:
+            return NULL;
+        default:
+            return NULL;
+    }
+}
+
+static int ushim_context_set_arg_any_body(Umka *umka, void *data)
+{
+    SetAnyArgumentData *arg = (SetAnyArgumentData *)data;
+    UmkaStackSlot *slot = arg && arg->function ? ushim_param(arg->function->params, arg->index) : NULL;
+    const Type *targetType = arg ? ushim_context_get_parameter_type(arg->function, arg->index) : NULL;
+    const Type *payloadType = NULL;
+    UmkaStackSlot payload = {0};
+
+    if (!arg || !slot || !targetType)
+        return 1;
+
+    if (arg->handle)
+    {
+        if (!umkaHostHandleValid(arg->handle))
+            return 1;
+
+        payloadType = (const Type *)umkaGetHostHandleType(arg->handle);
+        payload = umkaGetHostHandleValue(arg->handle);
+    }
+    else
+    {
+        payloadType = ushim_predecl_any_payload_type(umka, arg->payloadKind);
+        if (arg->payloadKind != TYPE_NONE && !payloadType)
+            return 1;
+
+        payload = arg->payload;
+        if (arg->payloadKind == TYPE_STR)
+            payload.ptrVal = arg->stringValue ? umkaMakeStr(umka, arg->stringValue) : NULL;
+    }
+
+    const int status = ushim_any_assign_to_storage(umka, targetType, slot, payloadType, payload);
+
+    if (!arg->handle && arg->payloadKind == TYPE_STR && payload.ptrVal)
+        umkaDecRef(umka, payload.ptrVal);
+
+    return status;
+}
+
+static int ushim_context_set_arg_any(Umka *umka, UmkaFuncContext *function, int index, int payloadKind, UmkaStackSlot payload, const char *stringValue, UmkaHostHandle *handle)
+{
+    SetAnyArgumentData data = {function, index, payloadKind, payload, stringValue, handle};
+    return ushim_try(umka, ushim_context_set_arg_any_body, &data);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_null(Umka *umka, UmkaFuncContext *function, int index)
+{
+    return ushim_context_set_arg_any(umka, function, index, TYPE_NONE, (UmkaStackSlot){0}, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_int(Umka *umka, UmkaFuncContext *function, int index, int64_t value)
+{
+    UmkaStackSlot payload = {0};
+    payload.intVal = value;
+    return ushim_context_set_arg_any(umka, function, index, TYPE_INT, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_uint(Umka *umka, UmkaFuncContext *function, int index, uint64_t value)
+{
+    UmkaStackSlot payload = {0};
+    payload.uintVal = value;
+    return ushim_context_set_arg_any(umka, function, index, TYPE_UINT, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_char(Umka *umka, UmkaFuncContext *function, int index, uint64_t value)
+{
+    UmkaStackSlot payload = {0};
+    payload.uintVal = value;
+    return ushim_context_set_arg_any(umka, function, index, TYPE_CHAR, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_real(Umka *umka, UmkaFuncContext *function, int index, double value)
+{
+    UmkaStackSlot payload = {0};
+    payload.realVal = value;
+    return ushim_context_set_arg_any(umka, function, index, TYPE_REAL, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_bool(Umka *umka, UmkaFuncContext *function, int index, int value)
+{
+    UmkaStackSlot payload = {0};
+    payload.intVal = value ? 1 : 0;
+    return ushim_context_set_arg_any(umka, function, index, TYPE_BOOL, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_string(Umka *umka, UmkaFuncContext *function, int index, const char *value)
+{
+    return ushim_context_set_arg_any(umka, function, index, TYPE_STR, (UmkaStackSlot){0}, value, NULL);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_any_native_value(Umka *umka, UmkaFuncContext *function, int index, UmkaHostHandle *handle)
+{
+    return ushim_context_set_arg_any(umka, function, index, TYPE_NONE, (UmkaStackSlot){0}, NULL, handle);
+}
+
+USHIM_EXPORT void ushim_native_value_release(UmkaHostHandle *handle)
+{
+    if (handle)
+    {
+        umkaReleaseHostHandle(handle);
+        free(handle);
+    }
+}
+
+USHIM_EXPORT int ushim_native_value_retain_host_data(Umka *umka, void *ptr, UmkaHostHandle **handle)
+{
+    if (handle)
+        *handle = NULL;
+    if (!umka || !ptr || !handle)
+        return 1;
+
+    UmkaHostHandle *retained = (UmkaHostHandle *)malloc(sizeof(UmkaHostHandle));
+    if (!retained)
+        return 1;
+
+    umkaMakeHostHandle(retained);
+    if (!umkaRetainHostData(umka, retained, ptr))
+    {
+        umkaReleaseHostHandle(retained);
+        free(retained);
+        return 1;
+    }
+
+    *handle = retained;
+    return 0;
+}
+
+USHIM_EXPORT int ushim_native_value_any_state(UmkaHostHandle *handle)
+{
+    UmkaAny *any = ushim_native_value_any_ptr(handle);
+    if (!any)
+        return 0;
+
+    const UmkaType *payloadType = NULL;
+    UmkaStackSlot payload = {0};
+    return umkaGetAnyValue(any, &payloadType, &payload) && payloadType ? 2 : 1;
+}
+
+USHIM_EXPORT int ushim_native_value_any_self_state(UmkaHostHandle *handle)
+{
+    UmkaAny *any = ushim_native_value_any_ptr(handle);
+    if (!any)
+        return 0;
+
+    const UmkaType *selfType = NULL;
+    void *self = NULL;
+    return umkaGetAnySelf(any, &selfType, &self) && selfType && self ? 1 : 0;
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_kind(UmkaHostHandle *handle)
+{
+    const Type *type = ushim_native_value_any_payload_type(handle, NULL);
+    return type ? type->kind : TYPE_NONE;
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_size(UmkaHostHandle *handle)
+{
+    const Type *type = ushim_native_value_any_payload_type(handle, NULL);
+    return type ? type->size : 0;
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_item_count(UmkaHostHandle *handle)
+{
+    const Type *type = ushim_native_value_any_payload_type(handle, NULL);
+    return type ? type->numItems : 0;
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_has_references(UmkaHostHandle *handle)
+{
+    const Type *type = ushim_native_value_any_payload_type(handle, NULL);
+    return type && type->isGarbageCollected ? 1 : 0;
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_type_name(UmkaHostHandle *handle)
+{
+    return ushim_type_name(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_element_kind(UmkaHostHandle *handle)
+{
+    return ushim_type_element_kind(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_element_size(UmkaHostHandle *handle)
+{
+    return ushim_type_element_size(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_element_has_references(UmkaHostHandle *handle)
+{
+    return ushim_type_element_has_references(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_element_type_name(UmkaHostHandle *handle)
+{
+    return ushim_type_element_name(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_nested_element_kind(UmkaHostHandle *handle)
+{
+    return ushim_type_nested_dynarray_element_kind(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_nested_element_size(UmkaHostHandle *handle)
+{
+    return ushim_type_nested_dynarray_element_size(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_nested_element_has_references(UmkaHostHandle *handle)
+{
+    return ushim_type_nested_dynarray_element_has_references(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_nested_element_type_name(UmkaHostHandle *handle)
+{
+    return ushim_type_nested_dynarray_element_name(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_key_kind(UmkaHostHandle *handle)
+{
+    return ushim_type_map_key_kind(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_key_size(UmkaHostHandle *handle)
+{
+    return ushim_type_map_key_size(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_key_has_references(UmkaHostHandle *handle)
+{
+    return ushim_type_map_key_has_references(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_map_key_type_name(UmkaHostHandle *handle)
+{
+    return ushim_type_map_key_name(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_value_kind(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_kind(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_value_size(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_size(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_value_has_references(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_has_references(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_map_value_type_name(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_name(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_value_element_kind(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_element_kind(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_value_element_size(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_element_size(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_map_value_element_has_references(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_element_has_references(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_map_value_element_type_name(UmkaHostHandle *handle)
+{
+    return ushim_type_map_value_element_name(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_is_variadic_parameter_list(UmkaHostHandle *handle)
+{
+    return ushim_type_is_variadic_parameter_list(ushim_native_value_any_payload_type(handle, NULL));
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_is_enum(UmkaHostHandle *handle)
+{
+    return ushim_enum_type(ushim_native_value_any_payload_type(handle, NULL)) ? 1 : 0;
+}
+
+USHIM_EXPORT int ushim_native_value_any_get_payload_enum_member_count(UmkaHostHandle *handle)
+{
+    const Type *type = ushim_enum_type(ushim_native_value_any_payload_type(handle, NULL));
+    return type ? type->numItems : 0;
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_enum_member_name(UmkaHostHandle *handle, int memberIndex)
+{
+    const EnumConst *member = ushim_enum_member(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
+    return member ? member->name : NULL;
+}
+
+USHIM_EXPORT int64_t ushim_native_value_any_get_payload_enum_member_signed_value(UmkaHostHandle *handle, int memberIndex)
+{
+    const EnumConst *member = ushim_enum_member(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
+    return member ? member->val.intVal : 0;
+}
+
+USHIM_EXPORT uint64_t ushim_native_value_any_get_payload_enum_member_unsigned_value(UmkaHostHandle *handle, int memberIndex)
+{
+    const EnumConst *member = ushim_enum_member(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
+    return member ? member->val.uintVal : 0;
+}
+
+USHIM_EXPORT int64_t ushim_native_value_any_get_payload_int(UmkaHostHandle *handle)
+{
+    UmkaStackSlot payload = {0};
+    (void)ushim_native_value_any_payload_type(handle, &payload);
+    return payload.intVal;
+}
+
+USHIM_EXPORT uint64_t ushim_native_value_any_get_payload_uint(UmkaHostHandle *handle)
+{
+    UmkaStackSlot payload = {0};
+    (void)ushim_native_value_any_payload_type(handle, &payload);
+    return payload.uintVal;
+}
+
+USHIM_EXPORT double ushim_native_value_any_get_payload_real(UmkaHostHandle *handle)
+{
+    UmkaStackSlot payload = {0};
+    const Type *type = ushim_native_value_any_payload_type(handle, &payload);
+    return type && type->kind == TYPE_REAL32 ? payload.real32Val : payload.realVal;
+}
+
+USHIM_EXPORT void *ushim_native_value_any_get_payload_ptr(UmkaHostHandle *handle)
+{
+    UmkaStackSlot payload = {0};
+    (void)ushim_native_value_any_payload_type(handle, &payload);
+    return payload.ptrVal;
+}
+
+USHIM_EXPORT const char *ushim_native_value_any_get_payload_string(UmkaHostHandle *handle)
+{
+    UmkaStackSlot payload = {0};
+    const Type *type = ushim_native_value_any_payload_type(handle, &payload);
+    return type && type->kind == TYPE_STR ? (const char *)payload.ptrVal : NULL;
+}
+
+USHIM_EXPORT int ushim_native_value_any_retain_payload(Umka *umka, UmkaHostHandle *handle, UmkaHostHandle **payloadHandle)
+{
+    if (payloadHandle)
+        *payloadHandle = NULL;
+
+    UmkaStackSlot payload = {0};
+    const Type *type = ushim_native_value_any_payload_type(handle, &payload);
+    if (!type || !payloadHandle)
+        return 1;
+
+    return ushim_native_value_retain(umka, type, payload, payloadHandle);
+}
+
 static UmkaStackSlot *ushim_param(UmkaStackSlot *params, int index)
 {
     return params ? umkaGetParam(params, index) : NULL;
@@ -255,11 +850,184 @@ static int ushim_context_get_explicit_argument_count(UmkaFuncContext *function)
     return count;
 }
 
-static const Type *ushim_context_get_parameter_type(UmkaFuncContext *function, int index);
-static const Type *ushim_context_get_result_type(UmkaFuncContext *function);
-static const Type *ushim_callback_get_parameter_type(UmkaStackSlot *params, int index);
-static const Type *ushim_callback_get_result_type(UmkaStackSlot *params, UmkaStackSlot *result);
-static const Type *ushim_type_element_type(const Type *type);
+static int ushim_type_uses_indirect_value_slot(const Type *type)
+{
+    if (!type)
+        return 0;
+
+    switch (type->kind)
+    {
+        case TYPE_ARRAY:
+        case TYPE_DYNARRAY:
+        case TYPE_MAP:
+        case TYPE_STRUCT:
+        case TYPE_INTERFACE:
+        case TYPE_CLOSURE:
+            return 1;
+
+        default:
+            return 0;
+    }
+}
+
+static const Type *ushim_callable_function_type(const Type *type)
+{
+    if (!type)
+        return NULL;
+
+    if (type->kind == TYPE_FN)
+        return type;
+
+    if (type->kind == TYPE_CLOSURE
+        && type->numItems > 0
+        && type->field[0]
+        && type->field[0]->type
+        && type->field[0]->type->kind == TYPE_FN)
+    {
+        return type->field[0]->type;
+    }
+
+    return NULL;
+}
+
+static UmkaStackSlot ushim_value_from_storage(const Type *type, UmkaStackSlot *storage)
+{
+    UmkaStackSlot value = {0};
+    if (!type || !storage)
+        return value;
+
+    if (ushim_type_uses_indirect_value_slot(type))
+        value.ptrVal = storage;
+    else
+        value = *storage;
+
+    return value;
+}
+
+static void *ushim_callback_result_assignment_target(const Type *type, UmkaStackSlot *slot)
+{
+    if (!type || !slot)
+        return NULL;
+
+    return ushim_type_uses_indirect_value_slot(type) ? slot->ptrVal : slot;
+}
+
+static int ushim_native_value_assign_to_storage(const Type *type, void *dest, UmkaStackSlot value)
+{
+    if (!type || !dest)
+        return 1;
+
+    if (ushim_type_uses_indirect_value_slot(type))
+    {
+        if (!value.ptrVal || type->size < 0)
+            return 1;
+
+        memcpy(dest, value.ptrVal, (size_t)type->size);
+        return 0;
+    }
+
+    *(UmkaStackSlot *)dest = value;
+    return 0;
+}
+
+static int ushim_native_value_assign_to_interface_storage(Umka *umka, const Type *target, void *dest, const UmkaHostHandle *handle)
+{
+    if (!umka || !dest || !ushim_type_is_non_empty_interface(target) || !umkaHostHandleValid(handle))
+        return 1;
+
+    const Type *source = (const Type *)umkaGetHostHandleType(handle);
+    if (!source || source->kind != TYPE_STRUCT)
+        return 1;
+
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    return umkaMakeInterface(umka, dest, (const UmkaType *)target, (const UmkaType *)source, value) ? 0 : 1;
+}
+
+static int ushim_native_value_type_matches(const Type *target, const UmkaHostHandle *handle)
+{
+    const Type *source = (const Type *)umkaGetHostHandleType(handle);
+    return target && source && typeEquivalent(target, source);
+}
+
+static int ushim_type_is_any(const Type *type)
+{
+    return type && type->kind == TYPE_INTERFACE && type->numItems == 2;
+}
+
+static int ushim_type_is_non_empty_interface(const Type *type)
+{
+    return type && type->kind == TYPE_INTERFACE && type->numItems > 2;
+}
+
+static UmkaAny *ushim_native_value_any_ptr(const UmkaHostHandle *handle)
+{
+    if (!umkaHostHandleValid(handle))
+        return NULL;
+
+    const Type *type = (const Type *)umkaGetHostHandleType(handle);
+    if (!ushim_type_is_any(type))
+        return NULL;
+
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    return (UmkaAny *)value.ptrVal;
+}
+
+static const Type *ushim_native_value_any_payload_type(const UmkaHostHandle *handle, UmkaStackSlot *payload)
+{
+    UmkaAny *any = ushim_native_value_any_ptr(handle);
+    if (!any)
+        return NULL;
+
+    const UmkaType *payloadType = NULL;
+    UmkaStackSlot payloadValue = {0};
+    if (!umkaGetAnyValue(any, &payloadType, &payloadValue) || !payloadType)
+        return NULL;
+
+    if (payload)
+        *payload = payloadValue;
+
+    return (const Type *)payloadType;
+}
+
+static int ushim_any_assign_to_storage(Umka *umka, const Type *targetType, void *dest, const Type *payloadType, UmkaStackSlot payload)
+{
+    if (!umka || !dest || !ushim_type_is_any(targetType))
+        return 1;
+
+    UmkaAny any = {0};
+    if (!umkaMakeAny(umka, &any, (const UmkaType *)payloadType, payload))
+        return 1;
+
+    UmkaStackSlot anyValue = {0};
+    anyValue.ptrVal = &any;
+    const int status = umkaAssignHostValue(umka, dest, (const UmkaType *)targetType, anyValue) ? 0 : 1;
+    if (status != 0)
+        (void)umkaReleaseHostValue(umka, &any, (const UmkaType *)targetType);
+    return status;
+}
+
+static int ushim_native_value_retain(Umka *umka, const Type *type, UmkaStackSlot value, UmkaHostHandle **handle)
+{
+    if (handle)
+        *handle = NULL;
+    if (!umka || !type || !handle)
+        return 1;
+
+    UmkaHostHandle *retained = (UmkaHostHandle *)malloc(sizeof(UmkaHostHandle));
+    if (!retained)
+        return 1;
+
+    umkaMakeHostHandle(retained);
+    if (!umkaRetainHostValue(umka, retained, (const UmkaType *)type, value))
+    {
+        umkaReleaseHostHandle(retained);
+        free(retained);
+        return 1;
+    }
+
+    *handle = retained;
+    return 0;
+}
 
 USHIM_EXPORT int ushim_context_set_arg_int(Umka *umka, UmkaFuncContext *function, int index, int64_t value)
 {
@@ -1065,6 +1833,453 @@ static int ushim_dynarray_type_accepts_nested_strings(const Type *type)
         && innerElementType->size == (int)sizeof(char *);
 }
 
+static int ushim_map_slot_type_accepts_host_value(const Type *type)
+{
+    if (!type)
+        return 0;
+
+    switch (type->kind)
+    {
+        case TYPE_INT8:
+        case TYPE_INT16:
+        case TYPE_INT32:
+        case TYPE_INT:
+        case TYPE_UINT8:
+        case TYPE_UINT16:
+        case TYPE_UINT32:
+        case TYPE_UINT:
+        case TYPE_BOOL:
+        case TYPE_CHAR:
+        case TYPE_REAL32:
+        case TYPE_REAL:
+        case TYPE_PTR:
+        case TYPE_WEAKPTR:
+        case TYPE_STR:
+            return 1;
+
+        case TYPE_ARRAY:
+        case TYPE_STRUCT:
+            return !typeHasPtr(type, true);
+
+        default:
+            return 0;
+    }
+}
+
+static int ushim_map_slot_type_accepts_bytes(const Type *type, int size)
+{
+    return type
+        && type->kind != TYPE_STR
+        && ushim_map_slot_type_accepts_host_value(type)
+        && size == type->size;
+}
+
+static int ushim_map_type_accepts_bytes(const Type *type, int keySize, int valueSize)
+{
+    return type
+        && type->kind == TYPE_MAP
+        && ushim_map_slot_type_accepts_bytes(typeMapKey(type), keySize)
+        && ushim_map_slot_type_accepts_bytes(typeMapItem(type), valueSize);
+}
+
+static int ushim_map_type_accepts_string_key_bytes_value(const Type *type, int valueSize)
+{
+    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    return type
+        && type->kind == TYPE_MAP
+        && keyType
+        && keyType->kind == TYPE_STR
+        && keyType->size == (int)sizeof(char *)
+        && ushim_map_slot_type_accepts_bytes(typeMapItem(type), valueSize);
+}
+
+static int ushim_map_type_accepts_bytes_key_string_value(const Type *type, int keySize)
+{
+    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    return type
+        && type->kind == TYPE_MAP
+        && ushim_map_slot_type_accepts_bytes(typeMapKey(type), keySize)
+        && valueType
+        && valueType->kind == TYPE_STR
+        && valueType->size == (int)sizeof(char *);
+}
+
+static int ushim_map_type_accepts_string_key_string_value(const Type *type)
+{
+    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    return type
+        && type->kind == TYPE_MAP
+        && keyType
+        && keyType->kind == TYPE_STR
+        && keyType->size == (int)sizeof(char *)
+        && valueType
+        && valueType->kind == TYPE_STR
+        && valueType->size == (int)sizeof(char *);
+}
+
+static int ushim_count_from_bytes(int byteCount, int itemSize, int *count)
+{
+    if (!count)
+        return 1;
+
+    *count = 0;
+    if (byteCount < 0 || itemSize <= 0 || byteCount % itemSize != 0)
+        return 1;
+
+    *count = byteCount / itemSize;
+    return 0;
+}
+
+static int ushim_make_slot_from_bytes(const Type *type, const void *bytes, int size, UmkaStackSlot *slot)
+{
+    if (!type || !bytes || !slot || size != type->size)
+        return 1;
+
+    memset(slot, 0, sizeof(*slot));
+
+    switch (type->kind)
+    {
+        case TYPE_INT8:
+        {
+            int8_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_INT16:
+        {
+            int16_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_INT32:
+        {
+            int32_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_INT:
+        {
+            int64_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_UINT8:
+        {
+            uint8_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_UINT16:
+        {
+            uint16_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_UINT32:
+        {
+            uint32_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_UINT:
+        {
+            uint64_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->uintVal = value;
+            return 0;
+        }
+        case TYPE_BOOL:
+        {
+            bool value = false;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value ? 1 : 0;
+            return 0;
+        }
+        case TYPE_CHAR:
+        {
+            unsigned char value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->intVal = value;
+            return 0;
+        }
+        case TYPE_REAL32:
+        {
+            float value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->realVal = value;
+            return 0;
+        }
+        case TYPE_REAL:
+        {
+            double value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->realVal = value;
+            return 0;
+        }
+        case TYPE_PTR:
+        {
+            void *value = NULL;
+            memcpy(&value, bytes, sizeof(value));
+            slot->ptrVal = value;
+            return 0;
+        }
+        case TYPE_WEAKPTR:
+        {
+            uint64_t value = 0;
+            memcpy(&value, bytes, sizeof(value));
+            slot->uintVal = value;
+            return 0;
+        }
+        case TYPE_ARRAY:
+        case TYPE_STRUCT:
+            slot->ptrVal = (void *)bytes;
+            return 0;
+
+        default:
+            return 1;
+    }
+}
+
+static int ushim_map_set_bytes_item(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const void *key,
+    const void *value)
+{
+    const Type *keyType = typeMapKey(type);
+    const Type *valueType = typeMapItem(type);
+    UmkaStackSlot keySlot = {0};
+    UmkaStackSlot valueSlot = {0};
+    if (ushim_make_slot_from_bytes(keyType, key, keyType->size, &keySlot) != 0
+        || ushim_make_slot_from_bytes(valueType, value, valueType->size, &valueSlot) != 0)
+    {
+        return 1;
+    }
+
+    return umkaSetMapItem(umka, (UmkaMap *)map, keySlot, valueSlot) ? 0 : 1;
+}
+
+static int ushim_map_set_string_key_bytes_value_item(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const char *key,
+    const void *value)
+{
+    const Type *valueType = typeMapItem(type);
+    UmkaStackSlot keySlot = {0};
+    UmkaStackSlot valueSlot = {0};
+    keySlot.ptrVal = key ? umkaMakeStr(umka, key) : NULL;
+
+    int status = 1;
+    if (ushim_make_slot_from_bytes(valueType, value, valueType->size, &valueSlot) == 0)
+        status = umkaSetMapItem(umka, (UmkaMap *)map, keySlot, valueSlot) ? 0 : 1;
+
+    if (keySlot.ptrVal)
+        umkaDecRef(umka, keySlot.ptrVal);
+
+    return status;
+}
+
+static int ushim_map_set_bytes_key_string_value_item(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const void *key,
+    const char *value)
+{
+    const Type *keyType = typeMapKey(type);
+    UmkaStackSlot keySlot = {0};
+    UmkaStackSlot valueSlot = {0};
+    valueSlot.ptrVal = value ? umkaMakeStr(umka, value) : NULL;
+
+    int status = 1;
+    if (ushim_make_slot_from_bytes(keyType, key, keyType->size, &keySlot) == 0)
+        status = umkaSetMapItem(umka, (UmkaMap *)map, keySlot, valueSlot) ? 0 : 1;
+
+    if (valueSlot.ptrVal)
+        umkaDecRef(umka, valueSlot.ptrVal);
+
+    return status;
+}
+
+static int ushim_map_set_string_key_string_value_item(
+    Umka *umka,
+    Map *map,
+    const char *key,
+    const char *value)
+{
+    UmkaStackSlot keySlot = {0};
+    UmkaStackSlot valueSlot = {0};
+    keySlot.ptrVal = key ? umkaMakeStr(umka, key) : NULL;
+    valueSlot.ptrVal = value ? umkaMakeStr(umka, value) : NULL;
+
+    int status = umkaSetMapItem(umka, (UmkaMap *)map, keySlot, valueSlot) ? 0 : 1;
+
+    if (keySlot.ptrVal)
+        umkaDecRef(umka, keySlot.ptrVal);
+    if (valueSlot.ptrVal)
+        umkaDecRef(umka, valueSlot.ptrVal);
+
+    return status;
+}
+
+static int ushim_set_map_bytes(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const void *keys,
+    int keyBytes,
+    const void *values,
+    int valueBytes)
+{
+    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    int keyCount = 0;
+    int valueCount = 0;
+    if (!umka
+        || !map
+        || !keyType
+        || !valueType
+        || !ushim_map_type_accepts_bytes(type, keyType ? keyType->size : 0, valueType ? valueType->size : 0)
+        || ushim_count_from_bytes(keyBytes, keyType->size, &keyCount) != 0
+        || ushim_count_from_bytes(valueBytes, valueType->size, &valueCount) != 0
+        || keyCount != valueCount
+        || (!keys && keyCount > 0)
+        || (!values && valueCount > 0)
+        || !umkaMakeMap(umka, (UmkaMap *)map, (const UmkaType *)type))
+    {
+        return 1;
+    }
+
+    const char *key = (const char *)keys;
+    const char *value = (const char *)values;
+    for (int i = 0; i < keyCount; i++)
+    {
+        if (ushim_map_set_bytes_item(umka, map, type, key, value) != 0)
+            return 1;
+
+        key += keyType->size;
+        value += valueType->size;
+    }
+
+    return 0;
+}
+
+static int ushim_set_map_string_key_bytes_value(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const char **keys,
+    int keyCount,
+    const void *values,
+    int valueBytes)
+{
+    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    int valueCount = 0;
+    if (!umka
+        || !map
+        || !valueType
+        || !ushim_map_type_accepts_string_key_bytes_value(type, valueType ? valueType->size : 0)
+        || keyCount < 0
+        || ushim_count_from_bytes(valueBytes, valueType->size, &valueCount) != 0
+        || keyCount != valueCount
+        || (!keys && keyCount > 0)
+        || (!values && valueCount > 0)
+        || !umkaMakeMap(umka, (UmkaMap *)map, (const UmkaType *)type))
+    {
+        return 1;
+    }
+
+    const char *value = (const char *)values;
+    for (int i = 0; i < keyCount; i++)
+    {
+        if (ushim_map_set_string_key_bytes_value_item(umka, map, type, keys[i], value) != 0)
+            return 1;
+
+        value += valueType->size;
+    }
+
+    return 0;
+}
+
+static int ushim_set_map_bytes_key_string_value(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const void *keys,
+    int keyBytes,
+    const char **values,
+    int valueCount)
+{
+    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    int keyCount = 0;
+    if (!umka
+        || !map
+        || !keyType
+        || !ushim_map_type_accepts_bytes_key_string_value(type, keyType ? keyType->size : 0)
+        || valueCount < 0
+        || ushim_count_from_bytes(keyBytes, keyType->size, &keyCount) != 0
+        || keyCount != valueCount
+        || (!keys && keyCount > 0)
+        || (!values && valueCount > 0)
+        || !umkaMakeMap(umka, (UmkaMap *)map, (const UmkaType *)type))
+    {
+        return 1;
+    }
+
+    const char *key = (const char *)keys;
+    for (int i = 0; i < valueCount; i++)
+    {
+        if (ushim_map_set_bytes_key_string_value_item(umka, map, type, key, values[i]) != 0)
+            return 1;
+
+        key += keyType->size;
+    }
+
+    return 0;
+}
+
+static int ushim_set_map_string_key_string_value(
+    Umka *umka,
+    Map *map,
+    const Type *type,
+    const char **keys,
+    int keyCount,
+    const char **values,
+    int valueCount)
+{
+    if (!umka
+        || !map
+        || !ushim_map_type_accepts_string_key_string_value(type)
+        || keyCount < 0
+        || valueCount < 0
+        || keyCount != valueCount
+        || (!keys && keyCount > 0)
+        || (!values && valueCount > 0)
+        || !umkaMakeMap(umka, (UmkaMap *)map, (const UmkaType *)type))
+    {
+        return 1;
+    }
+
+    for (int i = 0; i < keyCount; i++)
+    {
+        if (ushim_map_set_string_key_string_value_item(umka, map, keys[i], values[i]) != 0)
+            return 1;
+    }
+
+    return 0;
+}
+
 static DynArray *ushim_dynarray_nested_item(DynArray *outer, int index)
 {
     const int len = outer ? umkaGetDynArrayLen(outer) : -1;
@@ -1389,6 +2604,158 @@ USHIM_EXPORT int ushim_context_set_arg_nested_dynarray_strings(
 {
     SetNestedDynArrayStringArgData data = {function, index, lengths, lengthCount, values, valueCount};
     return ushim_try(umka, ushim_context_set_arg_nested_dynarray_strings_body, &data);
+}
+
+typedef struct
+{
+    UmkaFuncContext *function;
+    int index;
+    const void *keys;
+    int keyBytes;
+    const void *values;
+    int valueBytes;
+} SetMapArgData;
+
+static int ushim_context_set_arg_map_body(Umka *umka, void *data)
+{
+    SetMapArgData *arg = (SetMapArgData *)data;
+    UmkaStackSlot *slot = arg->function ? ushim_param(arg->function->params, arg->index) : NULL;
+    const Type *type = ushim_context_get_parameter_type(arg->function, arg->index);
+    return ushim_set_map_bytes(
+        umka,
+        (Map *)slot,
+        type,
+        arg->keys,
+        arg->keyBytes,
+        arg->values,
+        arg->valueBytes);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_map(
+    Umka *umka,
+    UmkaFuncContext *function,
+    int index,
+    const void *keys,
+    int keyBytes,
+    const void *values,
+    int valueBytes)
+{
+    SetMapArgData data = {function, index, keys, keyBytes, values, valueBytes};
+    return ushim_try(umka, ushim_context_set_arg_map_body, &data);
+}
+
+typedef struct
+{
+    UmkaFuncContext *function;
+    int index;
+    const char **keys;
+    int keyCount;
+    const void *values;
+    int valueBytes;
+} SetStringKeyMapArgData;
+
+static int ushim_context_set_arg_string_key_map_body(Umka *umka, void *data)
+{
+    SetStringKeyMapArgData *arg = (SetStringKeyMapArgData *)data;
+    UmkaStackSlot *slot = arg->function ? ushim_param(arg->function->params, arg->index) : NULL;
+    const Type *type = ushim_context_get_parameter_type(arg->function, arg->index);
+    return ushim_set_map_string_key_bytes_value(
+        umka,
+        (Map *)slot,
+        type,
+        arg->keys,
+        arg->keyCount,
+        arg->values,
+        arg->valueBytes);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_string_key_map(
+    Umka *umka,
+    UmkaFuncContext *function,
+    int index,
+    const char **keys,
+    int keyCount,
+    const void *values,
+    int valueBytes)
+{
+    SetStringKeyMapArgData data = {function, index, keys, keyCount, values, valueBytes};
+    return ushim_try(umka, ushim_context_set_arg_string_key_map_body, &data);
+}
+
+typedef struct
+{
+    UmkaFuncContext *function;
+    int index;
+    const void *keys;
+    int keyBytes;
+    const char **values;
+    int valueCount;
+} SetStringValueMapArgData;
+
+static int ushim_context_set_arg_string_value_map_body(Umka *umka, void *data)
+{
+    SetStringValueMapArgData *arg = (SetStringValueMapArgData *)data;
+    UmkaStackSlot *slot = arg->function ? ushim_param(arg->function->params, arg->index) : NULL;
+    const Type *type = ushim_context_get_parameter_type(arg->function, arg->index);
+    return ushim_set_map_bytes_key_string_value(
+        umka,
+        (Map *)slot,
+        type,
+        arg->keys,
+        arg->keyBytes,
+        arg->values,
+        arg->valueCount);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_string_value_map(
+    Umka *umka,
+    UmkaFuncContext *function,
+    int index,
+    const void *keys,
+    int keyBytes,
+    const char **values,
+    int valueCount)
+{
+    SetStringValueMapArgData data = {function, index, keys, keyBytes, values, valueCount};
+    return ushim_try(umka, ushim_context_set_arg_string_value_map_body, &data);
+}
+
+typedef struct
+{
+    UmkaFuncContext *function;
+    int index;
+    const char **keys;
+    int keyCount;
+    const char **values;
+    int valueCount;
+} SetStringMapArgData;
+
+static int ushim_context_set_arg_string_map_body(Umka *umka, void *data)
+{
+    SetStringMapArgData *arg = (SetStringMapArgData *)data;
+    UmkaStackSlot *slot = arg->function ? ushim_param(arg->function->params, arg->index) : NULL;
+    const Type *type = ushim_context_get_parameter_type(arg->function, arg->index);
+    return ushim_set_map_string_key_string_value(
+        umka,
+        (Map *)slot,
+        type,
+        arg->keys,
+        arg->keyCount,
+        arg->values,
+        arg->valueCount);
+}
+
+USHIM_EXPORT int ushim_context_set_arg_string_map(
+    Umka *umka,
+    UmkaFuncContext *function,
+    int index,
+    const char **keys,
+    int keyCount,
+    const char **values,
+    int valueCount)
+{
+    SetStringMapArgData data = {function, index, keys, keyCount, values, valueCount};
+    return ushim_try(umka, ushim_context_set_arg_string_map_body, &data);
 }
 
 static DynArray *ushim_context_result_dynarray(UmkaFuncContext *function)
@@ -2831,6 +4198,25 @@ USHIM_EXPORT const char *ushim_callback_get_param_string(UmkaStackSlot *params, 
     return slot ? (const char *)slot->ptrVal : NULL;
 }
 
+USHIM_EXPORT int ushim_callback_retain_param(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    int index,
+    UmkaHostHandle **handle)
+{
+    if (handle)
+        *handle = NULL;
+
+    Umka *umka = umkaGetInstance(result);
+    const Type *type = ushim_callback_get_parameter_type(params, index);
+    UmkaStackSlot *slot = ushim_param(params, index);
+    if (!umka || !type || !slot || !handle)
+        return 1;
+
+    UmkaStackSlot value = ushim_value_from_storage(type, slot);
+    return ushim_native_value_retain(umka, type, value, handle);
+}
+
 USHIM_EXPORT int ushim_callback_get_param_data(UmkaStackSlot *params, int index, void *buffer, int size)
 {
     UmkaStackSlot *slot = ushim_param(params, index);
@@ -3223,6 +4609,99 @@ USHIM_EXPORT void ushim_callback_set_result_string(UmkaStackSlot *params, UmkaSt
     umkaGetResult(params, result)->ptrVal = value ? umkaMakeStr(umka, value) : NULL;
 }
 
+static int ushim_callback_set_result_any(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    int payloadKind,
+    UmkaStackSlot payload,
+    const char *stringValue,
+    UmkaHostHandle *handle)
+{
+    Umka *umka = umkaGetInstance(result);
+    const Type *targetType = ushim_callback_get_result_type(params, result);
+    UmkaStackSlot *slot = umkaGetResult(params, result);
+    void *dest = ushim_callback_result_assignment_target(targetType, slot);
+    const Type *payloadType = NULL;
+
+    if (!umka || !dest || !targetType)
+        return 1;
+
+    if (handle)
+    {
+        if (!umkaHostHandleValid(handle))
+            return 1;
+
+        payloadType = (const Type *)umkaGetHostHandleType(handle);
+        payload = umkaGetHostHandleValue(handle);
+    }
+    else
+    {
+        payloadType = ushim_predecl_any_payload_type(umka, payloadKind);
+        if (payloadKind != TYPE_NONE && !payloadType)
+            return 1;
+
+        if (payloadKind == TYPE_STR)
+            payload.ptrVal = stringValue ? umkaMakeStr(umka, stringValue) : NULL;
+    }
+
+    const int status = ushim_any_assign_to_storage(umka, targetType, dest, payloadType, payload);
+
+    if (!handle && payloadKind == TYPE_STR && payload.ptrVal)
+        umkaDecRef(umka, payload.ptrVal);
+
+    return status;
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_null(UmkaStackSlot *params, UmkaStackSlot *result)
+{
+    return ushim_callback_set_result_any(params, result, TYPE_NONE, (UmkaStackSlot){0}, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_int(UmkaStackSlot *params, UmkaStackSlot *result, int64_t value)
+{
+    UmkaStackSlot payload = {0};
+    payload.intVal = value;
+    return ushim_callback_set_result_any(params, result, TYPE_INT, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_uint(UmkaStackSlot *params, UmkaStackSlot *result, uint64_t value)
+{
+    UmkaStackSlot payload = {0};
+    payload.uintVal = value;
+    return ushim_callback_set_result_any(params, result, TYPE_UINT, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_char(UmkaStackSlot *params, UmkaStackSlot *result, uint64_t value)
+{
+    UmkaStackSlot payload = {0};
+    payload.uintVal = value;
+    return ushim_callback_set_result_any(params, result, TYPE_CHAR, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_real(UmkaStackSlot *params, UmkaStackSlot *result, double value)
+{
+    UmkaStackSlot payload = {0};
+    payload.realVal = value;
+    return ushim_callback_set_result_any(params, result, TYPE_REAL, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_bool(UmkaStackSlot *params, UmkaStackSlot *result, int value)
+{
+    UmkaStackSlot payload = {0};
+    payload.intVal = value ? 1 : 0;
+    return ushim_callback_set_result_any(params, result, TYPE_BOOL, payload, NULL, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_string(UmkaStackSlot *params, UmkaStackSlot *result, const char *value)
+{
+    return ushim_callback_set_result_any(params, result, TYPE_STR, (UmkaStackSlot){0}, value, NULL);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_any_native_value(UmkaStackSlot *params, UmkaStackSlot *result, UmkaHostHandle *handle)
+{
+    return ushim_callback_set_result_any(params, result, TYPE_NONE, (UmkaStackSlot){0}, NULL, handle);
+}
+
 USHIM_EXPORT int ushim_callback_set_result_data(UmkaStackSlot *params, UmkaStackSlot *result, const void *value, int size)
 {
     const Type *type = ushim_callback_get_result_type(params, result);
@@ -3232,6 +4711,25 @@ USHIM_EXPORT int ushim_callback_set_result_data(UmkaStackSlot *params, UmkaStack
 
     memcpy(slot->ptrVal, value, size);
     return 0;
+}
+
+USHIM_EXPORT int ushim_callback_set_result_native_value(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    UmkaHostHandle *handle)
+{
+    Umka *umka = umkaGetInstance(result);
+    const Type *type = ushim_callback_get_result_type(params, result);
+    UmkaStackSlot *slot = umkaGetResult(params, result);
+    void *dest = ushim_callback_result_assignment_target(type, slot);
+    if (!umka || !type || !dest || !umkaHostHandleValid(handle))
+        return 1;
+
+    UmkaStackSlot value = umkaGetHostHandleValue(handle);
+    if (ushim_native_value_type_matches(type, handle))
+        return ushim_native_value_assign_to_storage(type, dest, value);
+
+    return ushim_native_value_assign_to_interface_storage(umka, type, dest, handle);
 }
 
 USHIM_EXPORT int ushim_callback_set_result_dynarray(
@@ -3348,6 +4846,102 @@ USHIM_EXPORT int ushim_callback_set_result_nested_dynarray_strings(
         type,
         lengths,
         lengthCount,
+        values,
+        valueCount);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_map(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    const void *keys,
+    int keyBytes,
+    const void *values,
+    int valueBytes)
+{
+    const Type *type = ushim_callback_get_result_type(params, result);
+    Umka *umka = umkaGetInstance(result);
+    UmkaStackSlot *slot = umkaGetResult(params, result);
+    if (!slot || !slot->ptrVal)
+        return 1;
+
+    return ushim_set_map_bytes(
+        umka,
+        (Map *)slot->ptrVal,
+        type,
+        keys,
+        keyBytes,
+        values,
+        valueBytes);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_string_key_map(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    const char **keys,
+    int keyCount,
+    const void *values,
+    int valueBytes)
+{
+    const Type *type = ushim_callback_get_result_type(params, result);
+    Umka *umka = umkaGetInstance(result);
+    UmkaStackSlot *slot = umkaGetResult(params, result);
+    if (!slot || !slot->ptrVal)
+        return 1;
+
+    return ushim_set_map_string_key_bytes_value(
+        umka,
+        (Map *)slot->ptrVal,
+        type,
+        keys,
+        keyCount,
+        values,
+        valueBytes);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_string_value_map(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    const void *keys,
+    int keyBytes,
+    const char **values,
+    int valueCount)
+{
+    const Type *type = ushim_callback_get_result_type(params, result);
+    Umka *umka = umkaGetInstance(result);
+    UmkaStackSlot *slot = umkaGetResult(params, result);
+    if (!slot || !slot->ptrVal)
+        return 1;
+
+    return ushim_set_map_bytes_key_string_value(
+        umka,
+        (Map *)slot->ptrVal,
+        type,
+        keys,
+        keyBytes,
+        values,
+        valueCount);
+}
+
+USHIM_EXPORT int ushim_callback_set_result_string_map(
+    UmkaStackSlot *params,
+    UmkaStackSlot *result,
+    const char **keys,
+    int keyCount,
+    const char **values,
+    int valueCount)
+{
+    const Type *type = ushim_callback_get_result_type(params, result);
+    Umka *umka = umkaGetInstance(result);
+    UmkaStackSlot *slot = umkaGetResult(params, result);
+    if (!slot || !slot->ptrVal)
+        return 1;
+
+    return ushim_set_map_string_key_string_value(
+        umka,
+        (Map *)slot->ptrVal,
+        type,
+        keys,
+        keyCount,
         values,
         valueCount);
 }

@@ -30,7 +30,13 @@ public enum UmkaValueKind
     /// <summary>Dynamic array value copied into or out of Umka-owned storage.</summary>
     DynamicArray,
     /// <summary>Opaque Umka weak pointer handle value.</summary>
-    WeakPointer
+    WeakPointer,
+    /// <summary>Map value copied into Umka-owned storage.</summary>
+    Map,
+    /// <summary>Retained native Umka value owned by a runtime.</summary>
+    NativeValue,
+    /// <summary>Umka dynamic <c>any</c> value.</summary>
+    Any
 }
 #pragma warning restore CA1720
 
@@ -43,6 +49,9 @@ public readonly struct UmkaValue
     private readonly string? _stringValue;
     private readonly IntPtr _pointerValue;
     private readonly StructuredValue? _structuredValue;
+    private readonly MapValue? _mapValue;
+    private readonly UmkaNativeValue? _nativeValue;
+    private readonly UmkaAnyValue? _anyValue;
 
     private UmkaValue(
         UmkaValueKind kind,
@@ -51,7 +60,10 @@ public readonly struct UmkaValue
         double doubleValue = 0,
         string? stringValue = null,
         IntPtr pointerValue = default,
-        StructuredValue? structuredValue = null)
+        StructuredValue? structuredValue = null,
+        MapValue? mapValue = null,
+        UmkaNativeValue? nativeValue = null,
+        UmkaAnyValue? anyValue = null)
     {
         Kind = kind;
         _int64Value = int64Value;
@@ -60,6 +72,9 @@ public readonly struct UmkaValue
         _stringValue = stringValue;
         _pointerValue = pointerValue;
         _structuredValue = structuredValue;
+        _mapValue = mapValue;
+        _nativeValue = nativeValue;
+        _anyValue = anyValue;
     }
 
     /// <summary>Gets the kind of value stored in this container.</summary>
@@ -77,6 +92,9 @@ public readonly struct UmkaValue
             UmkaValueKind.Pointer => _pointerValue,
             UmkaValueKind.WeakPointer => _uint64Value,
             UmkaValueKind.StaticArray or UmkaValueKind.Struct or UmkaValueKind.DynamicArray => _structuredValue?.Value,
+            UmkaValueKind.Map => _mapValue?.Value,
+            UmkaValueKind.NativeValue => _nativeValue,
+            UmkaValueKind.Any => _anyValue,
             _ => null
         };
 
@@ -173,6 +191,7 @@ public readonly struct UmkaValue
             string text => From(text),
             IntPtr pointer => FromPointer(pointer),
             UmkaHostHandle handle => FromHostHandle(handle),
+            UmkaAnyValue any => FromAny(any),
             Enum enumValue => UmkaEnumConversion.ToUmkaValue(enumValue.GetType(), enumValue),
             _ => throw new NotSupportedException(
                 $"FromScalar<T>() does not support value type {value.GetType().FullName}. Use FromStruct<T>(), FromStaticArray<TElement>(), FromPointer(), FromHostHandle(), or an explicit From(...) overload.")
@@ -206,6 +225,21 @@ public readonly struct UmkaValue
     {
         ArgumentNullException.ThrowIfNull(handle);
         return FromPointer(handle.Address);
+    }
+
+    /// <summary>Creates a value that passes a retained native Umka value back to its owning runtime.</summary>
+    public static UmkaValue FromNativeValue(UmkaNativeValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ObjectDisposedException.ThrowIf(value.IsDisposed, value);
+        return new UmkaValue(UmkaValueKind.NativeValue, nativeValue: value);
+    }
+
+    /// <summary>Creates a value that passes an Umka <c>any</c> value to a function or callback result.</summary>
+    public static UmkaValue FromAny(UmkaAnyValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return new UmkaValue(UmkaValueKind.Any, anyValue: value);
     }
 
     /// <summary>Creates a fixed-size struct value for an Umka struct parameter.</summary>
@@ -343,6 +377,50 @@ public readonly struct UmkaValue
             structuredValue: StructuredValue.CreateRawDynamicArray(bytes, length, elementSize));
     }
 
+    /// <summary>Creates a map value for an Umka <c>map[TKey]TValue</c> parameter or callback result.</summary>
+    public static UmkaValue FromMap<TKey, TValue>(IReadOnlyDictionary<TKey, TValue> values)
+        where TKey : struct
+        where TValue : struct
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        ValidateNoManagedReferences<TKey>(nameof(values));
+        ValidateNoManagedReferences<TValue>(nameof(values));
+        return new(
+            UmkaValueKind.Map,
+            mapValue: MapValue.Create(values, Marshal.SizeOf<TKey>(), Marshal.SizeOf<TValue>()));
+    }
+
+    /// <summary>Creates a map value for an Umka <c>map[str]TValue</c> parameter or callback result.</summary>
+    public static UmkaValue FromStringKeyMap<TValue>(IReadOnlyDictionary<string, TValue> values)
+        where TValue : struct
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        ValidateNoManagedReferences<TValue>(nameof(values));
+        return new(
+            UmkaValueKind.Map,
+            mapValue: MapValue.CreateStringKeyMap(values, Marshal.SizeOf<TValue>()));
+    }
+
+    /// <summary>Creates a map value for an Umka <c>map[TKey]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromStringValueMap<TKey>(IReadOnlyDictionary<TKey, string?> values)
+        where TKey : struct
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        ValidateNoManagedReferences<TKey>(nameof(values));
+        return new(
+            UmkaValueKind.Map,
+            mapValue: MapValue.CreateStringValueMap(values, Marshal.SizeOf<TKey>()));
+    }
+
+    /// <summary>Creates a map value for an Umka <c>map[str]str</c> parameter or callback result.</summary>
+    public static UmkaValue FromStringMap(IReadOnlyDictionary<string, string?> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return new(
+            UmkaValueKind.Map,
+            mapValue: MapValue.CreateStringMap(values));
+    }
+
     /// <summary>Tries to create a fixed-size static array value for an Umka static array parameter.</summary>
     public static bool TryFromStaticArray<TElement>(TElement[]? values, out UmkaValue result) where TElement : struct
     {
@@ -435,6 +513,110 @@ public readonly struct UmkaValue
         try
         {
             result = FromDynamicArray(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a map value for an Umka <c>map[TKey]TValue</c> parameter or callback result.</summary>
+    public static bool TryFromMap<TKey, TValue>(IReadOnlyDictionary<TKey, TValue>? values, out UmkaValue result)
+        where TKey : struct
+        where TValue : struct
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        try
+        {
+            result = FromMap(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a map value for an Umka <c>map[str]TValue</c> parameter or callback result.</summary>
+    public static bool TryFromStringKeyMap<TValue>(IReadOnlyDictionary<string, TValue>? values, out UmkaValue result)
+        where TValue : struct
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        try
+        {
+            result = FromStringKeyMap(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a map value for an Umka <c>map[TKey]str</c> parameter or callback result.</summary>
+    public static bool TryFromStringValueMap<TKey>(IReadOnlyDictionary<TKey, string?>? values, out UmkaValue result)
+        where TKey : struct
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        try
+        {
+            result = FromStringValueMap(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+
+        result = default;
+        return false;
+    }
+
+    /// <summary>Tries to create a map value for an Umka <c>map[str]str</c> parameter or callback result.</summary>
+    public static bool TryFromStringMap(IReadOnlyDictionary<string, string?>? values, out UmkaValue result)
+    {
+        if (values is null)
+        {
+            result = default;
+            return false;
+        }
+
+        try
+        {
+            result = FromStringMap(values);
             return true;
         }
         catch (ArgumentException)
@@ -673,6 +855,14 @@ public readonly struct UmkaValue
     public ulong AsWeakPointer() =>
         Kind == UmkaValueKind.WeakPointer ? _uint64Value : throw WrongKind(nameof(AsWeakPointer));
 
+    /// <summary>Reads the retained native Umka value.</summary>
+    public UmkaNativeValue AsNativeValue() =>
+        Kind == UmkaValueKind.NativeValue && _nativeValue is not null ? _nativeValue : throw WrongKind(nameof(AsNativeValue));
+
+    /// <summary>Reads the Umka <c>any</c> value.</summary>
+    public UmkaAnyValue AsAny() =>
+        Kind == UmkaValueKind.Any && _anyValue is not null ? _anyValue : throw WrongKind(nameof(AsAny));
+
     /// <summary>Tries to read the value as an opaque Umka weak pointer handle.</summary>
     public bool TryAsWeakPointer(out ulong value)
     {
@@ -683,6 +873,32 @@ public readonly struct UmkaValue
         }
 
         value = default;
+        return false;
+    }
+
+    /// <summary>Tries to read the retained native Umka value.</summary>
+    public bool TryAsNativeValue([NotNullWhen(true)] out UmkaNativeValue? value)
+    {
+        if (Kind == UmkaValueKind.NativeValue && _nativeValue is not null)
+        {
+            value = _nativeValue;
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>Tries to read the Umka <c>any</c> value.</summary>
+    public bool TryAsAny([NotNullWhen(true)] out UmkaAnyValue? value)
+    {
+        if (Kind == UmkaValueKind.Any && _anyValue is not null)
+        {
+            value = _anyValue;
+            return true;
+        }
+
+        value = null;
         return false;
     }
 
@@ -863,6 +1079,9 @@ public readonly struct UmkaValue
             UmkaValueKind.Pointer => $"UmkaValue(Pointer: {FormatPointer(_pointerValue)})",
             UmkaValueKind.WeakPointer => $"UmkaValue(WeakPointer: 0x{_uint64Value:x})",
             UmkaValueKind.StaticArray or UmkaValueKind.Struct or UmkaValueKind.DynamicArray => _structuredValue?.ToString() ?? $"UmkaValue({Kind})",
+            UmkaValueKind.Map => _mapValue?.ToString() ?? "UmkaValue(Map)",
+            UmkaValueKind.NativeValue => _nativeValue?.ToString() ?? "UmkaValue(NativeValue)",
+            UmkaValueKind.Any => _anyValue?.ToString() ?? "UmkaValue(Any)",
             _ => $"UmkaValue({Kind})"
         };
 
@@ -880,6 +1099,22 @@ public readonly struct UmkaValue
 
     internal bool IsNestedStringDynamicArray =>
         Kind == UmkaValueKind.DynamicArray && _structuredValue?.IsNestedStringArray == true;
+
+    internal bool IsStringKeyMap =>
+        Kind == UmkaValueKind.Map && _mapValue?.IsStringKey == true;
+
+    internal bool IsStringValueMap =>
+        Kind == UmkaValueKind.Map && _mapValue?.IsStringValue == true;
+
+    internal int MapCount => _mapValue?.Count ?? throw WrongKind(nameof(MapCount));
+
+    internal int MapKeySize => _mapValue?.KeySize ?? throw WrongKind(nameof(MapKeySize));
+
+    internal int MapValueSize => _mapValue?.ValueSize ?? throw WrongKind(nameof(MapValueSize));
+
+    internal UmkaNativeValue NativeValue => AsNativeValue();
+
+    internal UmkaAnyValue AnyValue => AsAny();
 
     internal string?[] GetStringDynamicArray() =>
         IsStringDynamicArray ? _structuredValue!.GetStringArray() : throw WrongKind(nameof(GetStringDynamicArray));
@@ -904,6 +1139,28 @@ public readonly struct UmkaValue
             throw WrongKind(nameof(CopyNestedDynamicArrayElementsTo));
 
         _structuredValue!.CopyNestedElementsTo(destination);
+    }
+
+    internal string?[] GetStringMapKeys() =>
+        IsStringKeyMap ? _mapValue!.GetStringKeys() : throw WrongKind(nameof(GetStringMapKeys));
+
+    internal string?[] GetStringMapValues() =>
+        IsStringValueMap ? _mapValue!.GetStringValues() : throw WrongKind(nameof(GetStringMapValues));
+
+    internal void CopyMapKeysTo(IntPtr destination)
+    {
+        if (Kind != UmkaValueKind.Map || IsStringKeyMap)
+            throw WrongKind(nameof(CopyMapKeysTo));
+
+        _mapValue!.CopyKeysTo(destination);
+    }
+
+    internal void CopyMapValuesTo(IntPtr destination)
+    {
+        if (Kind != UmkaValueKind.Map || IsStringValueMap)
+            throw WrongKind(nameof(CopyMapValuesTo));
+
+        _mapValue!.CopyValuesTo(destination);
     }
 
     private static void ValidateNoManagedReferences<T>(string parameterName) where T : struct
@@ -959,6 +1216,171 @@ public readonly struct UmkaValue
             .Replace("\r", "\\r", StringComparison.Ordinal)
             .Replace("\n", "\\n", StringComparison.Ordinal)
             .Replace("\t", "\\t", StringComparison.Ordinal);
+
+    private sealed class MapValue
+    {
+        private readonly object _keys;
+        private readonly object _values;
+        private readonly bool _stringKey;
+        private readonly bool _stringValue;
+
+        private MapValue(
+            object keys,
+            object values,
+            int count,
+            int keySize,
+            int valueSize,
+            bool stringKey,
+            bool stringValue)
+        {
+            _keys = keys;
+            _values = values;
+            Count = count;
+            KeySize = keySize;
+            ValueSize = valueSize;
+            _stringKey = stringKey;
+            _stringValue = stringValue;
+        }
+
+        public object Value => CreateDiagnosticDictionary();
+
+        public int Count { get; }
+
+        public int KeySize { get; }
+
+        public int ValueSize { get; }
+
+        public bool IsStringKey => _stringKey;
+
+        public bool IsStringValue => _stringValue;
+
+        public static MapValue Create<TKey, TValue>(
+            IReadOnlyDictionary<TKey, TValue> values,
+            int keySize,
+            int valueSize)
+            where TKey : struct
+            where TValue : struct
+        {
+            var keys = new TKey[values.Count];
+            var mapValues = new TValue[values.Count];
+            var index = 0;
+            foreach (var pair in values)
+            {
+                keys[index] = pair.Key;
+                mapValues[index] = pair.Value;
+                index++;
+            }
+
+            return new(keys, mapValues, values.Count, keySize, valueSize, stringKey: false, stringValue: false);
+        }
+
+        public static MapValue CreateStringKeyMap<TValue>(
+            IReadOnlyDictionary<string, TValue> values,
+            int valueSize)
+            where TValue : struct
+        {
+            var keys = new string[values.Count];
+            var mapValues = new TValue[values.Count];
+            var index = 0;
+            foreach (var pair in values)
+            {
+                if (pair.Key is null)
+                    throw new ArgumentException("String map keys cannot be null.", nameof(values));
+
+                UmkaStringValidation.ThrowIfContainsNullCharacter(pair.Key, nameof(values));
+                keys[index] = pair.Key;
+                mapValues[index] = pair.Value;
+                index++;
+            }
+
+            return new(keys, mapValues, values.Count, IntPtr.Size, valueSize, stringKey: true, stringValue: false);
+        }
+
+        public static MapValue CreateStringValueMap<TKey>(
+            IReadOnlyDictionary<TKey, string?> values,
+            int keySize)
+            where TKey : struct
+        {
+            var keys = new TKey[values.Count];
+            var mapValues = new string?[values.Count];
+            var index = 0;
+            foreach (var pair in values)
+            {
+                UmkaStringValidation.ThrowIfContainsNullCharacter(pair.Value, nameof(values));
+                keys[index] = pair.Key;
+                mapValues[index] = pair.Value;
+                index++;
+            }
+
+            return new(keys, mapValues, values.Count, keySize, IntPtr.Size, stringKey: false, stringValue: true);
+        }
+
+        public static MapValue CreateStringMap(IReadOnlyDictionary<string, string?> values)
+        {
+            var keys = new string[values.Count];
+            var mapValues = new string?[values.Count];
+            var index = 0;
+            foreach (var pair in values)
+            {
+                if (pair.Key is null)
+                    throw new ArgumentException("String map keys cannot be null.", nameof(values));
+
+                UmkaStringValidation.ThrowIfContainsNullCharacter(pair.Key, nameof(values));
+                UmkaStringValidation.ThrowIfContainsNullCharacter(pair.Value, nameof(values));
+                keys[index] = pair.Key;
+                mapValues[index] = pair.Value;
+                index++;
+            }
+
+            return new(keys, mapValues, values.Count, IntPtr.Size, IntPtr.Size, stringKey: true, stringValue: true);
+        }
+
+        public string?[] GetStringKeys() =>
+            _stringKey && _keys is string[] keys
+                ? keys.ToArray()
+                : throw new InvalidOperationException("Map value does not store string keys.");
+
+        public string?[] GetStringValues() =>
+            _stringValue && _values is string?[] values
+                ? values.ToArray()
+                : throw new InvalidOperationException("Map value does not store string values.");
+
+        public void CopyKeysTo(IntPtr destination)
+        {
+            if (_stringKey)
+                throw new InvalidOperationException("String map keys cannot be copied as unmanaged bytes.");
+
+            CopyArrayTo((Array)_keys, KeySize, destination);
+        }
+
+        public void CopyValuesTo(IntPtr destination)
+        {
+            if (_stringValue)
+                throw new InvalidOperationException("String map values cannot be copied as unmanaged bytes.");
+
+            CopyArrayTo((Array)_values, ValueSize, destination);
+        }
+
+        public override string ToString() =>
+            $"UmkaValue(Map: Count={Count}, KeySize={KeySize}, ValueSize={ValueSize}, StringKeys={_stringKey}, StringValues={_stringValue})";
+
+        private Dictionary<object, object?> CreateDiagnosticDictionary()
+        {
+            var result = new Dictionary<object, object?>(Count);
+            var keys = (Array)_keys;
+            var values = (Array)_values;
+            for (var i = 0; i < Count; i++)
+                result.Add(keys.GetValue(i)!, values.GetValue(i));
+
+            return result;
+        }
+
+        private static void CopyArrayTo(Array values, int elementSize, IntPtr destination)
+        {
+            for (var i = 0; i < values.Length; i++)
+                Marshal.StructureToPtr(values.GetValue(i)!, IntPtr.Add(destination, i * elementSize), fDeleteOld: false);
+        }
+    }
 
     private sealed class StructuredValue
     {

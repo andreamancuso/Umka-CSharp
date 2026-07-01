@@ -13,6 +13,7 @@ public sealed class UmkaFunction
     private readonly ReadOnlyCollection<UmkaTypeInfo> _publicParameterTypes;
     private readonly NativeUmkaTypeKind[] _nativeParameterKinds;
     private readonly NativeUmkaTypeKind[] _nativeParameterElementKinds;
+    private readonly UmkaNativeValue? _callableValue;
     private NativeMethods.FunctionContext _context;
 
     internal UmkaFunction(
@@ -25,13 +26,15 @@ public sealed class UmkaFunction
         NativeUmkaTypeKind[] nativeParameterElementKinds,
         int requiredParameterCount,
         int defaultParameterCount,
-        UmkaTypeInfo resultType)
+        UmkaTypeInfo resultType,
+        UmkaNativeValue? callableValue = null)
     {
         _runtime = runtime;
         _parameterTypes = parameterTypes;
         _publicParameterTypes = Array.AsReadOnly(parameterTypes);
         _nativeParameterKinds = nativeParameterKinds;
         _nativeParameterElementKinds = nativeParameterElementKinds;
+        _callableValue = callableValue;
         RequiredParameterCount = IsVariadicFunction(parameterTypes) ? parameterTypes.Length - 1 : requiredParameterCount;
         DefaultParameterCount = defaultParameterCount;
         ResultType = resultType;
@@ -49,6 +52,9 @@ public sealed class UmkaFunction
 
     /// <summary>Gets the root or module-qualified function identity used in diagnostics.</summary>
     public string QualifiedName { get; }
+
+    /// <summary>Gets a value indicating whether this invocable function is backed by a retained Umka callable value.</summary>
+    public bool IsRetainedCallable => _callableValue is not null;
 
     /// <summary>Gets the number of explicit arguments expected by this function.</summary>
     public int ParameterCount => _parameterTypes.Length;
@@ -75,6 +81,12 @@ public sealed class UmkaFunction
 
     /// <summary>Returns whether the result metadata can be read as a dynamic value without executing the function.</summary>
     public bool CanReadResultAsValue() => ResultType.CanReadAsValue();
+
+    /// <summary>Returns whether the result metadata can be retained as a runtime-owned native Umka value.</summary>
+    public bool CanReadResultAsNativeValue() => ResultType.CanRetainAsNativeValue();
+
+    /// <summary>Returns whether the result metadata can be read as an Umka <c>any</c> value.</summary>
+    public bool CanReadResultAsAny() => ResultType.IsAny;
 
     /// <summary>Returns whether the result metadata can be read as a supported scalar, string, pointer, enum, or dynamic value without executing the function.</summary>
     public bool CanReadResultAsScalar<T>() => ResultType.CanReadAsScalar<T>();
@@ -146,6 +158,9 @@ public sealed class UmkaFunction
     {
         try
         {
+            if (_callableValue?.IsDisposed == true)
+                return false;
+
             var boundArguments = BindVariadicArguments(arguments);
             return boundArguments is null
                 ? CanCallWithBoundArguments(arguments)
@@ -172,6 +187,9 @@ public sealed class UmkaFunction
     public UmkaValue CallValue(ReadOnlySpan<UmkaValue> arguments)
     {
         _runtime.CheckCallable();
+        if (ResultType.IsAny)
+            return UmkaValue.FromAny(CallAny(arguments));
+
         return ResultType.Kind switch
         {
             UmkaTypeKind.Void => CallVoidAndReturnValue(arguments),
@@ -215,6 +233,82 @@ public sealed class UmkaFunction
     /// <summary>Tries to call the function and read a dynamic value for supported scalar, string, pointer, weak pointer, or void results.</summary>
     public bool TryCallValue(out UmkaValue value, params UmkaValue[] arguments) =>
         TryCallValue(ToArgumentSpan(arguments), out value);
+
+    /// <summary>Calls the function and retains its result as a runtime-owned native Umka value.</summary>
+    public UmkaNativeValue CallNativeValue(params UmkaValue[] arguments) =>
+        CallNativeValue(ToArgumentSpan(arguments));
+
+    /// <summary>Calls the function and retains its result as a runtime-owned native Umka value.</summary>
+    public UmkaNativeValue CallNativeValue(ReadOnlySpan<UmkaValue> arguments)
+    {
+        _runtime.CheckCallable();
+        if (!ResultType.CanRetainAsNativeValue())
+        {
+            throw new InvalidOperationException(
+                $"Function '{DiagnosticName}' returns Umka type '{ResultType.TypeName}', which cannot be retained as a native Umka value.");
+        }
+
+        var handle = InvokeRetainingResult(arguments);
+        return _runtime.AdoptNativeValue(handle, ResultType);
+    }
+
+    /// <summary>Tries to call the function and retain its result as a runtime-owned native Umka value.</summary>
+    public bool TryCallNativeValue(ReadOnlySpan<UmkaValue> arguments, [NotNullWhen(true)] out UmkaNativeValue? value)
+    {
+        _runtime.CheckCallable();
+        ValidateArguments(arguments);
+
+        if (!ResultType.CanRetainAsNativeValue())
+        {
+            value = null;
+            return false;
+        }
+
+        value = CallNativeValue(arguments);
+        return true;
+    }
+
+    /// <summary>Tries to call the function and retain its result as a runtime-owned native Umka value.</summary>
+    public bool TryCallNativeValue([NotNullWhen(true)] out UmkaNativeValue? value, params UmkaValue[] arguments) =>
+        TryCallNativeValue(ToArgumentSpan(arguments), out value);
+
+    /// <summary>Calls the function and deconstructs its result as an Umka <c>any</c> value.</summary>
+    public UmkaAnyValue CallAny(params UmkaValue[] arguments) =>
+        CallAny(ToArgumentSpan(arguments));
+
+    /// <summary>Calls the function and deconstructs its result as an Umka <c>any</c> value.</summary>
+    public UmkaAnyValue CallAny(ReadOnlySpan<UmkaValue> arguments)
+    {
+        _runtime.CheckCallable();
+        if (!ResultType.IsAny)
+        {
+            throw new InvalidOperationException(
+                $"Function '{DiagnosticName}' returns Umka type '{ResultType.TypeName}', which cannot be read as an any value.");
+        }
+
+        using var retained = CallNativeValue(arguments);
+        return retained.AsAny();
+    }
+
+    /// <summary>Tries to call the function and deconstruct its result as an Umka <c>any</c> value.</summary>
+    public bool TryCallAny(ReadOnlySpan<UmkaValue> arguments, [NotNullWhen(true)] out UmkaAnyValue? value)
+    {
+        _runtime.CheckCallable();
+        ValidateArguments(arguments);
+
+        if (!ResultType.IsAny)
+        {
+            value = null;
+            return false;
+        }
+
+        value = CallAny(arguments);
+        return true;
+    }
+
+    /// <summary>Tries to call the function and deconstruct its result as an Umka <c>any</c> value.</summary>
+    public bool TryCallAny([NotNullWhen(true)] out UmkaAnyValue? value, params UmkaValue[] arguments) =>
+        TryCallAny(ToArgumentSpan(arguments), out value);
 
     /// <summary>Calls the function and returns its result as a supported scalar, string, pointer, enum, or dynamic value.</summary>
     [return: MaybeNull]
@@ -1571,8 +1665,37 @@ public sealed class UmkaFunction
         SetOmittedDefaultArguments(actualArguments.Length);
 
         _runtime.ClearLastCallbackException();
-        var status = NativeMethods.Call(_runtime.Handle, ref _context);
+        var status = _callableValue is null
+            ? NativeMethods.Call(_runtime.Handle, ref _context)
+            : NativeMethods.CallableCall(_runtime.Handle, _callableValue.Handle, ref _context);
         _runtime.ThrowIfExecutionError(status);
+    }
+
+    private IntPtr InvokeRetainingResult(ReadOnlySpan<UmkaValue> arguments)
+    {
+        _runtime.CheckCallable();
+        var boundArguments = BindVariadicArguments(arguments);
+        var actualArguments = boundArguments is null ? arguments : boundArguments.AsSpan();
+        ValidateBoundArguments(actualArguments);
+
+        for (var i = 0; i < actualArguments.Length; i++)
+            SetArgument(i, actualArguments[i]);
+
+        SetOmittedDefaultArguments(actualArguments.Length);
+
+        _runtime.ClearLastCallbackException();
+        IntPtr handle;
+        var status = _callableValue is null
+            ? NativeMethods.ContextCallRetainResult(_runtime.Handle, ref _context, out handle)
+            : NativeMethods.CallableCallRetainResult(_runtime.Handle, _callableValue.Handle, ref _context, out handle);
+        if (status != 0 && !_runtime.TryGetLastError(out _))
+        {
+            throw new InvalidOperationException(
+                $"Function '{DiagnosticName}' result of Umka type '{ResultType.TypeName}' could not be retained as a native Umka value.");
+        }
+
+        _runtime.ThrowIfExecutionError(status);
+        return handle;
     }
 
     private void ValidateArguments(ReadOnlySpan<UmkaValue> arguments)
@@ -1896,6 +2019,11 @@ public sealed class UmkaFunction
             return false;
 
         var nativeKind = _nativeParameterKinds[index];
+        if (value.Kind == UmkaValueKind.NativeValue)
+            return CanAcceptNativeValueArgument(index, value.NativeValue);
+        if (value.Kind == UmkaValueKind.Any)
+            return CanAcceptAnyArgument(index, value.AnyValue);
+
         if (!IsSupportedArgumentKind(nativeKind) || !IsCompatibleArgumentKind(nativeKind, value.Kind))
             return false;
 
@@ -1903,6 +2031,7 @@ public sealed class UmkaFunction
         {
             UmkaValueKind.StaticArray or UmkaValueKind.Struct => CanAcceptStructuredArgument(index, nativeKind, value),
             UmkaValueKind.DynamicArray => CanAcceptDynamicArrayArgument(index, value),
+            UmkaValueKind.Map => CanAcceptMapArgument(index, value),
             _ => IsArgumentInRange(nativeKind, value)
         };
     }
@@ -1943,6 +2072,38 @@ public sealed class UmkaFunction
             && !value.IsStringDynamicArray
             && !value.IsNestedDynamicArray
             && value.StructuredElementSize == parameterType.ElementNativeSize;
+    }
+
+    private bool CanAcceptMapArgument(int index, UmkaValue value) =>
+        UmkaMapValueCompatibility.CanWrite(_parameterTypes[index], value);
+
+    private bool CanAcceptNativeValueArgument(int index, UmkaNativeValue value) =>
+        _parameterTypes[index].CanRetainAsNativeValue()
+        && value.CanAssignTo(_runtime, _parameterTypes[index]);
+
+    private bool CanAcceptAnyArgument(int index, UmkaAnyValue value) =>
+        _parameterTypes[index].IsAny
+        && CanWriteAnyPayload(value);
+
+    private bool CanWriteAnyPayload(UmkaAnyValue value)
+    {
+        if (value.IsNull)
+            return true;
+
+        return value.Payload.Kind switch
+        {
+            UmkaValueKind.Int
+                or UmkaValueKind.UInt
+                or UmkaValueKind.Real
+                or UmkaValueKind.Bool
+                or UmkaValueKind.String => true,
+            UmkaValueKind.NativeValue => value.Payload.TryAsNativeValue(out var nativeValue)
+                && !nativeValue.IsDisposed
+                && ReferenceEquals(nativeValue.Runtime, _runtime)
+                && nativeValue.Type.CanRetainAsNativeValue()
+                && nativeValue.Type.Kind != UmkaTypeKind.Fiber,
+            _ => false
+        };
     }
 
     private static bool IsArgumentInRange(NativeUmkaTypeKind nativeKind, UmkaValue value) =>
@@ -1996,6 +2157,9 @@ public sealed class UmkaFunction
             UmkaValueKind.WeakPointer => NativeMethods.ContextSetArgUInt(_runtime.Handle, ref _context, index, value.AsWeakPointer()),
             UmkaValueKind.StaticArray or UmkaValueKind.Struct => SetStructuredArgument(index, value),
             UmkaValueKind.DynamicArray => SetDynamicArrayArgument(index, value),
+            UmkaValueKind.Map => UmkaMapNativeWriter.SetFunctionArgument(_runtime.Handle, ref _context, index, value),
+            UmkaValueKind.NativeValue => NativeMethods.ContextSetArgNativeValue(_runtime.Handle, ref _context, index, value.NativeValue.Handle),
+            UmkaValueKind.Any => SetAnyArgument(index, value.AnyValue),
             _ => throw new ArgumentOutOfRangeException(nameof(value), value.Kind, "Unsupported value kind.")
         };
 
@@ -2119,12 +2283,43 @@ public sealed class UmkaFunction
         }
     }
 
+    private int SetAnyArgument(int index, UmkaAnyValue value)
+    {
+        if (value.IsNull)
+            return NativeMethods.ContextSetArgAnyNull(_runtime.Handle, ref _context, index);
+
+        return value.Payload.Kind switch
+        {
+            UmkaValueKind.Int => NativeMethods.ContextSetArgAnyInt(_runtime.Handle, ref _context, index, value.Payload.AsInt64()),
+            UmkaValueKind.UInt when value.PayloadType?.Kind == UmkaTypeKind.Character =>
+                NativeMethods.ContextSetArgAnyChar(_runtime.Handle, ref _context, index, value.Payload.AsUInt64()),
+            UmkaValueKind.UInt => NativeMethods.ContextSetArgAnyUInt(_runtime.Handle, ref _context, index, value.Payload.AsUInt64()),
+            UmkaValueKind.Real => NativeMethods.ContextSetArgAnyReal(_runtime.Handle, ref _context, index, value.Payload.AsDouble()),
+            UmkaValueKind.Bool => NativeMethods.ContextSetArgAnyBool(_runtime.Handle, ref _context, index, value.Payload.AsBoolean() ? 1 : 0),
+            UmkaValueKind.String => NativeMethods.ContextSetArgAnyString(_runtime.Handle, ref _context, index, value.Payload.AsString()),
+            UmkaValueKind.NativeValue => NativeMethods.ContextSetArgAnyNativeValue(_runtime.Handle, ref _context, index, value.Payload.AsNativeValue().Handle),
+            _ => 1
+        };
+    }
+
     private void ValidateArgument(int index, UmkaValue value)
     {
         if (value.Kind == UmkaValueKind.Void)
             throw new ArgumentException("Void cannot be used as a function argument.", nameof(value));
 
         var nativeKind = _nativeParameterKinds[index];
+        if (value.Kind == UmkaValueKind.NativeValue)
+        {
+            ValidateNativeValueArgument(index, value.NativeValue, nameof(value));
+            return;
+        }
+
+        if (value.Kind == UmkaValueKind.Any)
+        {
+            ValidateAnyArgument(index, value.AnyValue, nameof(value));
+            return;
+        }
+
         if (!IsSupportedArgumentKind(nativeKind))
         {
             throw new ArgumentException(
@@ -2148,6 +2343,12 @@ public sealed class UmkaFunction
         if (value.Kind == UmkaValueKind.DynamicArray)
         {
             ValidateDynamicArrayArgument(index, value);
+            return;
+        }
+
+        if (value.Kind == UmkaValueKind.Map)
+        {
+            ValidateMapArgument(index, value);
             return;
         }
 
@@ -2304,6 +2505,94 @@ public sealed class UmkaFunction
             throw new ArgumentException(
                 $"Function '{DiagnosticName}' argument {index} expects Umka type '{parameterType.TypeName}' with native element size {elementSize} bytes, but dynamic array value elements have size {value.StructuredElementSize} bytes.",
                 nameof(value));
+        }
+    }
+
+    private void ValidateMapArgument(int index, UmkaValue value)
+    {
+        UmkaMapValueCompatibility.Validate(
+            $"Function '{DiagnosticName}' argument {index}",
+            _parameterTypes[index],
+            value,
+            nameof(value));
+    }
+
+    private void ValidateNativeValueArgument(int index, UmkaNativeValue nativeValue, string parameterName)
+    {
+        var parameterType = _parameterTypes[index];
+        if (!parameterType.CanRetainAsNativeValue())
+        {
+            throw new ArgumentException(
+                $"Function '{DiagnosticName}' argument {index} expects Umka type '{parameterType.TypeName}', which cannot be assigned from a retained native Umka value.",
+                parameterName);
+        }
+
+        ObjectDisposedException.ThrowIf(nativeValue.IsDisposed, nativeValue);
+
+        if (!ReferenceEquals(nativeValue.Runtime, _runtime))
+        {
+            throw new InvalidOperationException(
+                $"Function '{DiagnosticName}' argument {index} expects a native Umka value owned by the same runtime.");
+        }
+
+        if (!nativeValue.CanAssignTo(_runtime, parameterType))
+        {
+            throw new ArgumentException(
+                $"Function '{DiagnosticName}' argument {index} expects Umka type '{parameterType.TypeName}', but retained native value type '{nativeValue.Type.TypeName}' was provided.",
+                parameterName);
+        }
+    }
+
+    private void ValidateAnyArgument(int index, UmkaAnyValue anyValue, string parameterName)
+    {
+        var parameterType = _parameterTypes[index];
+        if (!parameterType.IsAny)
+        {
+            throw new ArgumentException(
+                $"Function '{DiagnosticName}' argument {index} expects Umka type '{parameterType.TypeName}', which is not Umka any.",
+                parameterName);
+        }
+
+        ValidateAnyPayload($"Function '{DiagnosticName}' argument {index}", anyValue, parameterName);
+    }
+
+    private void ValidateAnyPayload(string owner, UmkaAnyValue anyValue, string parameterName)
+    {
+        if (anyValue.IsNull)
+            return;
+
+        switch (anyValue.Payload.Kind)
+        {
+            case UmkaValueKind.Int:
+            case UmkaValueKind.UInt:
+            case UmkaValueKind.Real:
+            case UmkaValueKind.Bool:
+            case UmkaValueKind.String:
+                return;
+
+            case UmkaValueKind.NativeValue:
+            {
+                var nativeValue = anyValue.Payload.AsNativeValue();
+                ObjectDisposedException.ThrowIf(nativeValue.IsDisposed, nativeValue);
+                if (!ReferenceEquals(nativeValue.Runtime, _runtime))
+                    throw new InvalidOperationException($"{owner} expects an any payload owned by the same runtime.");
+                if (nativeValue.Type.Kind == UmkaTypeKind.Fiber)
+                    throw new ArgumentException($"{owner} cannot use a fiber value as an any payload because host-side fiber resume is not supported.", parameterName);
+                if (!nativeValue.Type.CanRetainAsNativeValue())
+                    throw new ArgumentException($"{owner} cannot use Umka type '{nativeValue.Type.TypeName}' as a retained any payload.", parameterName);
+                return;
+            }
+
+            case UmkaValueKind.StaticArray:
+            case UmkaValueKind.Struct:
+            case UmkaValueKind.DynamicArray:
+            case UmkaValueKind.Map:
+                throw new ArgumentException(
+                    $"{owner} cannot construct an any payload from managed {anyValue.Payload.Kind} bytes because the value does not carry concrete Umka type metadata. Retain an Umka value and pass it with UmkaAnyValue.From(UmkaNativeValue).",
+                    parameterName);
+
+            default:
+                throw new ArgumentException($"{owner} does not support value kind {anyValue.Payload.Kind} as an any payload.", parameterName);
         }
     }
 
@@ -2533,14 +2822,15 @@ public sealed class UmkaFunction
             or NativeUmkaTypeKind.String
             or NativeUmkaTypeKind.StaticArray
             or NativeUmkaTypeKind.Struct
-            or NativeUmkaTypeKind.DynamicArray;
+            or NativeUmkaTypeKind.DynamicArray
+            or NativeUmkaTypeKind.Map;
 
     private string UnsupportedArgumentMessage(int index, NativeUmkaTypeKind nativeKind)
     {
         var typeName = _parameterTypes[index].TypeName;
         if (nativeKind == NativeUmkaTypeKind.Map)
         {
-            return $"Function '{DiagnosticName}' argument {index} expects Umka map type '{typeName}', but UmkaSharp cannot synthesize map arguments from C#. The current Umka public C API exposes map lookup and type metadata, but not host-side map creation, insertion, rooting, ownership transfer, or assignment/reference-count updates.";
+            return $"Function '{DiagnosticName}' argument {index} expects Umka map type '{typeName}', but that map key/value shape cannot be constructed from a managed map value.";
         }
 
         return $"Function '{DiagnosticName}' argument {index} expects Umka type '{typeName}', which UmkaSharp does not support as a call argument.";
@@ -2566,6 +2856,7 @@ public sealed class UmkaFunction
             NativeUmkaTypeKind.StaticArray => valueKind == UmkaValueKind.StaticArray,
             NativeUmkaTypeKind.Struct => valueKind == UmkaValueKind.Struct,
             NativeUmkaTypeKind.DynamicArray => valueKind == UmkaValueKind.DynamicArray,
+            NativeUmkaTypeKind.Map => valueKind == UmkaValueKind.Map,
             _ => false
         };
 

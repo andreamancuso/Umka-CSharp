@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
 
 env:
-  UMKA_REPOSITORY: vtereshkov/umka-lang
-  UMKA_REF: a66d5bf830130dd5435b4661ec15bfd34c11a08f
+  UMKA_REPOSITORY: andreamancuso/umka-lang
+  UMKA_REF: 4cbf92ac216be0e4088ddc61aa0589df43ed066d
 
 jobs:
   workflow-policy:

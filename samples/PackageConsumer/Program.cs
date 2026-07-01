@@ -388,6 +388,19 @@ var negativeValidation = VerifyManagedValidation(scoreFunction, rangeFunction, r
 var deferredBoundary = VerifyDeferredBoundary(runtime);
 var stringBoundary = VerifyStringBoundaryValidation(runtime);
 var fileSystem = VerifyFileSystemOption();
+using var retainedClosure = runtime.GetFunction("closureValue").CallNativeValue();
+var callable = retainedClosure.AsCallable();
+if (!retainedClosure.IsCallable ||
+    !retainedClosure.Type.IsCallable ||
+    !callable.IsRetainedCallable ||
+    callable.ResultType.Kind != UmkaTypeKind.SignedInteger)
+{
+    throw new InvalidOperationException("Retained closure callable metadata did not roundtrip.");
+}
+
+var callableAnswer = callable.CallInt64();
+if (callableAnswer != 42)
+    throw new InvalidOperationException("Retained closure callable invocation did not roundtrip.");
 
 Console.WriteLine($"score={score}");
 Console.WriteLine($"host={hostBonus}");
@@ -407,6 +420,7 @@ Console.WriteLine(FormattableString.Invariant(
     $"dynamic={dynamicAnswer}:{dynamicArguments}:{dynamicTruth}:{dynamicRatio:0.0}:zero:{dynamicVoid.Kind}"));
 Console.WriteLine($"negative={negativeValidation}");
 Console.WriteLine($"deferred={deferredBoundary}");
+Console.WriteLine($"callable={callableAnswer}:{callable.IsRetainedCallable}");
 Console.WriteLine($"strings={stringBoundary}");
 Console.WriteLine("warning=not-used");
 Console.WriteLine($"fs={fileSystem}");
@@ -443,7 +457,6 @@ static string VerifyDeferredBoundary(UmkaRuntime runtime)
         ("interfaceValue", UmkaTypeKind.Interface),
         ("closureValue", UmkaTypeKind.Closure),
         ("fiberValue", UmkaTypeKind.Fiber),
-        ("anyValue", UmkaTypeKind.Interface),
     };
 
     foreach (var (functionName, expectedKind) in argumentExpectations)
@@ -464,9 +477,16 @@ static string VerifyDeferredBoundary(UmkaRuntime runtime)
         ExpectThrows<InvalidOperationException>(() => function.CallValue());
     }
 
+    var anyFunction = runtime.GetFunction("anyValue");
+    if (anyFunction.ResultType.Kind != UmkaTypeKind.Interface || !anyFunction.ResultType.IsAny)
+        throw new InvalidOperationException("Unexpected package consumer any result metadata.");
+    if (anyFunction.CallAny().Payload.AsInt64() != 42)
+        throw new InvalidOperationException("Package consumer any result did not roundtrip.");
+
     return
         $"args:{string.Join(':', argumentExpectations.Select(item => item.Kind))};" +
-        $"results:{string.Join(':', resultExpectations.Select(item => item.Kind))}";
+        $"results:{string.Join(':', resultExpectations.Select(item => item.Kind))};" +
+        "any:supported";
 }
 
 static string VerifyExportVisibility(UmkaRuntime runtime)

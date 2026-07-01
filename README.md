@@ -11,7 +11,7 @@ The repository is pinned to .NET SDK 9 via `global.json` and targets `net9.0`. N
 - Target framework: `net9.0`
 - Supported package RIDs: `win-x64` and `linux-x64`
 - Native bridge: `umka_shim`, a small C ABI built from this repository and the Umka C sources
-- Public API areas: runtime lifecycle, source/module loading, compilation, exported function lookup, typed calls, callbacks, host handles, errors, disposal, and fixed-layout marshalling
+- Public API areas: runtime lifecycle, source/module loading, compilation, exported function lookup, typed calls, callbacks, host handles, interruption, errors, disposal, and fixed-layout marshalling
 - Verification: native-backed tests, sample output checks, package-consumer smoke tests, package layout checks, and release-only publishing policy checks
 
 UmkaSharp is an alpha package. The supported API surface and known limitations are documented below.
@@ -50,7 +50,7 @@ var answer = runtime.GetFunction("answer").CallInt64();
 Console.WriteLine(answer); // 42
 ```
 
-Exported Umka functions use `*` in the source. `CompileSource()` and `CompileFile()` are the shortest path for ordinary hosts. Pass `configure: runtime => { ... }` when modules or callbacks need to be registered before compilation. Use `TryCompileSource()` or `TryCompileFile()` when compile errors are expected user input and should be handled as `UmkaError` data without catching `UmkaException`; use `TryRun(out exception)` when `main()` runtime errors should be handled the same way while preserving callback inner exceptions.
+Exported Umka functions use `*` in the source. `CompileSource()` and `CompileFile()` are the shortest path for ordinary hosts. Pass `configure: runtime => { ... }` when modules or callbacks need to be registered before compilation. Use `TryCompileSource()` or `TryCompileFile()` when compile errors are expected user input and should be handled as `UmkaError` data without catching `UmkaException`; use `TryRun(out exception)` when `main()` runtime errors should be handled the same way while preserving callback inner exceptions. Long-running Umka code can be interrupted with `RequestInterrupt(message)`; a pending interrupt can be inspected with `IsInterruptRequested` or cleared before execution with `ClearInterrupt()`.
 
 ## Host Callbacks
 
@@ -85,11 +85,14 @@ The first public marshalling layer is explicit and copy-based. Supported values 
 - dynamic arrays across supported call/result/callback directions when element values contain no Umka-managed references, including `[]weak ^T` as `ulong[]` opaque handle arrays
 - `[]str` dynamic arrays through string-specific copy APIs (`UmkaValue.FromDynamicArray(string?[])`, `CallStringArray`, and `GetStringArray`)
 - nested dynamic arrays such as `[][]int` and `[][]str` through `UmkaValue.FromNestedDynamicArray`, `CallNestedDynamicArray<TElement>`, `GetNestedDynamicArray<TElement>`, `CallNestedStringArray`, and `GetNestedStringArray` when inner element values contain no Umka-managed references or are direct `str`
-- map results and callback map arguments copied into managed dictionaries when key/value types are fixed-layout values without Umka-managed references, direct `str` values copied through string-specific map APIs, dynamic-array values have reference-free or direct-`str` elements, or weak pointer handles copied as `ulong`
+- map arguments, map callback results, map results, and callback map arguments copied through managed dictionaries when key/value types are fixed-layout values without Umka-managed references or direct `str`; function results and callback arguments also support dynamic-array map values with reference-free or direct-`str` elements
+- built-in `any` values through `UmkaAnyValue`, including `CallAny`, `GetAny`, scalar/string/null construction, retained same-runtime native payload construction, and payload inspection through `PayloadType` plus `Payload`
+- retained native Umka values through `CallNativeValue`, `GetNativeValue`, and `UmkaValue.FromNativeValue` when the retained value is passed back to the same runtime and exact Umka type
+- retained Umka `fn` and closure values can be converted to `UmkaFunction` with `UmkaNativeValue.AsCallable()` and invoked with the normal `Call*` methods while the retained value and runtime remain alive
 - generic scalar helpers through `FromScalar<T>()`, `TryFromScalar<T>()`, `AsScalar<T>()`, `TryAsScalar<T>()`, `CallScalar<T>()`, `TryCallScalar<T>()`, `GetScalar<T>()`, and `TryGetScalar<T>()`
 - dynamic scalar/string/pointer/weak-pointer/void results through `CallValue()` and `TryCallValue()`
 
-Interfaces, fibers, `any`, reference-bearing aggregates, reference-bearing dynamic-array elements other than direct `str` or supported nested arrays, map keys or values containing Umka-managed references other than direct `str` or supported dynamic-array values with reference-free or direct-`str` elements, C# map arguments, C# callback map results, and long-lived rooted heap wrappers are exposed only as metadata or rejected with diagnostics. C# map arguments and C# callback map results are blocked by Umka's current public C API: it exposes map lookup/type metadata, but not host-side map creation, insertion, rooting, ownership transfer, or assignment/reference-count updates. Closure values are metadata-only because Umka closures carry captured `any` upvalue state that UmkaSharp does not root, retain, or invoke from C#. Fiber values are metadata-only because Umka stores them as internal `Fiber *` VM state and exposes creation/resume through language builtins rather than public host C API functions.
+Retained native values are opaque ownership handles, not general managed object models. They can preserve supported Umka heap values across the C# boundary and pass them back unchanged. `UmkaAnyValue` can inspect and construct built-in `any` values for scalar, string, null, and retained same-runtime native payloads; managed aggregate snapshots such as `UmkaValue.FromMap(...)` cannot be boxed into `any` directly because they do not carry the concrete native Umka type metadata. Supported retained `fn` and closure values are callable through `AsCallable()`. Retained concrete Umka structs can satisfy non-empty interface parameters or callback results when Umka can resolve the native method table. Managed interface method-table inspection/dispatch and fibers remain metadata-only or rejected with diagnostics.
 
 ## Local Native Build
 

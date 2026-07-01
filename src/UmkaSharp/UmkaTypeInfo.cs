@@ -250,15 +250,51 @@ public sealed record UmkaTypeInfo(UmkaTypeKind Kind, string TypeName)
     public bool IsAggregate =>
         Kind is UmkaTypeKind.StaticArray or UmkaTypeKind.Struct;
 
+    /// <summary>Gets a value indicating whether the type is Umka's built-in <c>any</c> interface.</summary>
+    public bool IsAny =>
+        Kind == UmkaTypeKind.Interface
+        && ItemCount == 2
+        && NativeSize == IntPtr.Size * 2;
+
+    /// <summary>Gets a value indicating whether the type is an Umka callable <c>fn</c> or closure value.</summary>
+    public bool IsCallable => Kind is UmkaTypeKind.Function or UmkaTypeKind.Closure;
+
     /// <summary>Gets a value indicating whether the type currently needs a future managed wrapper before crossing the boundary.</summary>
     public bool IsDeferred =>
-        Kind is (UmkaTypeKind.Interface
-            or UmkaTypeKind.Closure
-            or UmkaTypeKind.Fiber
-            or UmkaTypeKind.Function)
+        Kind == UmkaTypeKind.Interface && !IsAny
+            || Kind == UmkaTypeKind.Fiber
             || Kind == UmkaTypeKind.DynamicArray
                 && (ElementNativeSize <= 0 || ElementHasReferences && !CanReadAsStringArray() && !HasReadableNestedDynamicArrayMetadata && !HasNestedStringArrayMetadata)
             || Kind == UmkaTypeKind.Map && (MapKeyNativeSize <= 0 || MapValueNativeSize <= 0 || HasUnsupportedMapReferences);
+
+    internal bool IsEquivalentTo(UmkaTypeInfo other) =>
+        Kind == other.Kind &&
+        string.Equals(TypeName, other.TypeName, StringComparison.Ordinal) &&
+        NativeSize == other.NativeSize &&
+        ItemCount == other.ItemCount &&
+        HasReferences == other.HasReferences &&
+        ElementKind == other.ElementKind &&
+        string.Equals(ElementTypeName, other.ElementTypeName, StringComparison.Ordinal) &&
+        ElementNativeSize == other.ElementNativeSize &&
+        ElementHasReferences == other.ElementHasReferences &&
+        NestedElementKind == other.NestedElementKind &&
+        string.Equals(NestedElementTypeName, other.NestedElementTypeName, StringComparison.Ordinal) &&
+        NestedElementNativeSize == other.NestedElementNativeSize &&
+        NestedElementHasReferences == other.NestedElementHasReferences &&
+        MapKeyKind == other.MapKeyKind &&
+        string.Equals(MapKeyTypeName, other.MapKeyTypeName, StringComparison.Ordinal) &&
+        MapKeyNativeSize == other.MapKeyNativeSize &&
+        MapKeyHasReferences == other.MapKeyHasReferences &&
+        MapValueKind == other.MapValueKind &&
+        string.Equals(MapValueTypeName, other.MapValueTypeName, StringComparison.Ordinal) &&
+        MapValueNativeSize == other.MapValueNativeSize &&
+        MapValueHasReferences == other.MapValueHasReferences &&
+        MapValueElementKind == other.MapValueElementKind &&
+        string.Equals(MapValueElementTypeName, other.MapValueElementTypeName, StringComparison.Ordinal) &&
+        MapValueElementNativeSize == other.MapValueElementNativeSize &&
+        MapValueElementHasReferences == other.MapValueElementHasReferences &&
+        IsVariadicParameterList == other.IsVariadicParameterList &&
+        IsEnum == other.IsEnum;
 
     /// <summary>Returns whether the type can be represented as a dynamic <see cref="UmkaValue" />.</summary>
     public bool CanReadAsValue() =>
@@ -270,7 +306,19 @@ public sealed record UmkaTypeInfo(UmkaTypeKind Kind, string TypeName)
             or UmkaTypeKind.Character
             or UmkaTypeKind.String
             or UmkaTypeKind.Pointer
-            or UmkaTypeKind.WeakPointer;
+            or UmkaTypeKind.WeakPointer
+            || IsAny;
+
+    /// <summary>Returns whether the type can be retained as a runtime-owned native Umka value.</summary>
+    public bool CanRetainAsNativeValue() =>
+        Kind is UmkaTypeKind.String
+            or UmkaTypeKind.StaticArray
+            or UmkaTypeKind.DynamicArray
+            or UmkaTypeKind.Map
+            or UmkaTypeKind.Struct
+            or UmkaTypeKind.Interface
+            or UmkaTypeKind.Closure
+            or UmkaTypeKind.Function;
 
     /// <summary>Returns whether the type can be read as a supported scalar, string, pointer, enum, or dynamic value.</summary>
     public bool CanReadAsScalar<T>() => CanReadAsScalarType(typeof(T));
@@ -556,6 +604,10 @@ public sealed record UmkaTypeInfo(UmkaTypeKind Kind, string TypeName)
             details.Add("MapValueElementHasReferences=True");
         if (IsVariadicParameterList)
             details.Add("IsVariadicParameterList=True");
+        if (IsAny)
+            details.Add("IsAny=True");
+        if (IsCallable)
+            details.Add("IsCallable=True");
         if (HasReferences)
             details.Add("HasReferences=True");
         if (IsEnum)

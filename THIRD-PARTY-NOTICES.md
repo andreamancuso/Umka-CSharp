@@ -7,6 +7,7 @@ UmkaSharp distributes a managed .NET library and RID-specific native bridge asse
 ### Umka
 
 - Upstream: <https://github.com/vtereshkov/umka-lang>
+- Selected source: <https://github.com/andreamancuso/umka-lang>
 - Local development checkout: `C:\dev\umka-lang`
 - License: BSD 2-Clause License
 - Package role: included in native runtime assets such as `runtimes/win-x64/native/umka_shim.dll` and `runtimes/linux-x64/native/libumka_shim.so`

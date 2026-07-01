@@ -1028,6 +1028,7 @@ public sealed class CallbackTests
             fn inspectFiber*(value: fiber): int
             """);
 
+        UmkaNativeValue? capturedClosure = null;
         runtime.Register("inspectDynamicArray", frame =>
         {
             var parameterType = Assert.Single(frame.ParameterTypes);
@@ -1061,17 +1062,29 @@ public sealed class CallbackTests
         runtime.Register("inspectAny", frame =>
         {
             AssertAnyMetadata(Assert.Single(frame.ParameterTypes));
-            return AssertUnsupportedCallbackArgument(frame, UmkaTypeKind.Interface, "interface");
+            Assert.True(frame.CanReadArgumentAsAny(0));
+            Assert.Equal(42, frame.GetAny(0).Payload.AsInt64());
+            return UmkaValue.From(1);
         });
         runtime.Register("inspectClosure", frame =>
         {
             var parameterType = Assert.Single(frame.ParameterTypes);
             Assert.Equal(UmkaTypeKind.Closure, parameterType.Kind);
             Assert.True(parameterType.HasReferences);
-            Assert.True(parameterType.IsDeferred);
+            Assert.False(parameterType.IsDeferred);
+            Assert.True(parameterType.IsCallable);
             Assert.True(parameterType.NativeSize >= IntPtr.Size * 2);
+            Assert.True(parameterType.CanRetainAsNativeValue());
+            Assert.True(frame.CanReadArgumentAsNativeValue(0));
+            Assert.True(frame.TryGetNativeValue(0, out var transientClosure));
+            Assert.NotNull(transientClosure);
+            using (transientClosure)
+            {
+                Assert.True(transientClosure.IsCallable);
+            }
 
-            return AssertUnsupportedCallbackArgument(frame, UmkaTypeKind.Closure);
+            capturedClosure = frame.GetNativeValue(0);
+            return UmkaValue.From(1);
         });
         runtime.Register("inspectWeak", frame =>
         {
@@ -1111,6 +1124,13 @@ public sealed class CallbackTests
         runtime.Compile();
 
         Assert.Equal(7, runtime.GetFunction("run").CallInt64());
+        Assert.NotNull(capturedClosure);
+        using (capturedClosure)
+        {
+            var callable = capturedClosure.AsCallable();
+            Assert.True(callable.IsRetainedCallable);
+            Assert.Equal(42, callable.CallInt64());
+        }
     }
 
     [Fact]
@@ -1345,7 +1365,7 @@ public sealed class CallbackTests
         AssertUnsupportedCallbackResult(
             "fn makeValue*(): map[str]int",
             UmkaTypeKind.Map,
-            expectedMessage: "not host-side map creation, insertion, rooting, ownership transfer, or assignment/reference-count updates");
+            expectedMessage: "value kind Int");
         AssertUnsupportedCallbackResult(
             """
             type Speaker* = interface {
@@ -1356,11 +1376,6 @@ public sealed class CallbackTests
             """,
             UmkaTypeKind.Interface,
             assertResultType: resultType => AssertInterfaceMetadata(resultType, expectedItemCount: 3));
-        AssertUnsupportedCallbackResult(
-            "fn makeValue*(): any",
-            UmkaTypeKind.Interface,
-            "interface",
-            AssertAnyMetadata);
         AssertUnsupportedCallbackResult(
             "fn makeValue*(): fiber",
             UmkaTypeKind.Fiber,
@@ -1374,8 +1389,10 @@ public sealed class CallbackTests
             assertResultType: resultType =>
             {
                 Assert.True(resultType.HasReferences);
-                Assert.True(resultType.IsDeferred);
+                Assert.False(resultType.IsDeferred);
+                Assert.True(resultType.IsCallable);
                 Assert.True(resultType.NativeSize >= IntPtr.Size * 2);
+                Assert.True(resultType.CanRetainAsNativeValue());
             });
     }
 
@@ -1905,6 +1922,123 @@ public sealed class CallbackTests
     }
 
     [Fact]
+    public void Callback_can_return_map_results()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            import "host.um"
+
+            fn scoreSum*(): int {
+                scores := host::makeScores()
+                total := 0
+                for _, key in keys(scores) {
+                    total += scores[key]
+                }
+                return total
+            }
+
+            fn textScore*(): int {
+                scores := host::makeTextScores()
+                return scores["alpha"] + scores["beta"]
+            }
+
+            fn labelLength*(): int {
+                labels := host::makeLabels()
+                return len(labels[1]) + len(labels[2])
+            }
+
+            fn aliasLength*(): int {
+                aliases := host::makeAliases()
+                return len(aliases["a"]) + len(aliases["b"])
+            }
+
+            fn anyScoreCount*(): int {
+                scores := host::makeAnyScores()
+                return len(scores)
+            }
+            """);
+
+        runtime.AddModule("host.um", """
+            fn makeScores*(): map[int]int
+            fn makeTextScores*(): map[str]int
+            fn makeLabels*(): map[int]str
+            fn makeAliases*(): map[str]str
+            fn makeAnyScores*(): map[int]any
+            """);
+
+        runtime.Register("makeScores", frame =>
+        {
+            Assert.Equal(UmkaTypeKind.Map, frame.ResultType.Kind);
+            Assert.Equal(UmkaTypeKind.SignedInteger, frame.ResultType.MapKeyKind);
+            Assert.Equal(UmkaTypeKind.SignedInteger, frame.ResultType.MapValueKind);
+
+            var value = UmkaValue.FromMap(new Dictionary<long, long>
+            {
+                [1] = 10,
+                [2] = 14,
+                [3] = 18,
+            });
+            Assert.True(frame.CanReturn(value));
+            Assert.False(frame.CanReturn(UmkaValue.FromStringKeyMap(new Dictionary<string, long> { ["1"] = 10 })));
+            return value;
+        });
+
+        runtime.Register("makeTextScores", frame =>
+        {
+            var value = UmkaValue.FromStringKeyMap(new Dictionary<string, long>
+            {
+                ["alpha"] = 17,
+                ["beta"] = 25,
+            });
+            Assert.True(frame.CanReturn(value));
+            Assert.False(frame.CanReturn(UmkaValue.FromMap(new Dictionary<long, long> { [1] = 42 })));
+            return value;
+        });
+
+        runtime.Register("makeLabels", frame =>
+        {
+            var value = UmkaValue.FromStringValueMap(new Dictionary<long, string?>
+            {
+                [1] = "one",
+                [2] = "two",
+            });
+            Assert.True(frame.CanReturn(value));
+            return value;
+        });
+
+        runtime.Register("makeAliases", frame =>
+        {
+            var value = UmkaValue.FromStringMap(new Dictionary<string, string?>
+            {
+                ["a"] = "alpha",
+                ["b"] = "beta",
+            });
+            Assert.True(frame.CanReturn(value));
+            return value;
+        });
+
+        var anyScoresCallback = runtime.Register("makeAnyScores", frame =>
+        {
+            var value = UmkaValue.FromMap(new Dictionary<long, long> { [1] = 42 });
+            Assert.False(frame.CanReturn(value));
+            return value;
+        });
+
+        runtime.Compile();
+
+        Assert.Equal(42, runtime.GetFunction("scoreSum").CallInt64());
+        Assert.Equal(42, runtime.GetFunction("textScore").CallInt64());
+        Assert.Equal(6, runtime.GetFunction("labelLength").CallInt64());
+        Assert.Equal(9, runtime.GetFunction("aliasLength").CallInt64());
+
+        Assert.Throws<UmkaException>(() => runtime.GetFunction("anyScoreCount").CallInt64());
+        var callbackEx = Assert.IsType<ArgumentException>(anyScoresCallback.LastException);
+        Assert.Contains("value type", callbackEx.Message);
+        Assert.Contains("contains Umka-managed references", callbackEx.Message);
+    }
+
+    [Fact]
     public void Callback_marshals_dynamic_arrays_of_opaque_weak_pointer_handles()
     {
         NativeTestEnvironment.RequireNativeShim();
@@ -2396,8 +2530,13 @@ public sealed class CallbackTests
 
     private static void AssertAnyMetadata(UmkaTypeInfo type)
     {
-        AssertInterfaceMetadata(type, expectedItemCount: 2);
+        Assert.Equal(UmkaTypeKind.Interface, type.Kind);
+        Assert.True(type.HasReferences);
+        Assert.False(type.IsDeferred);
+        Assert.True(type.IsAny);
+        Assert.True(type.CanReadAsValue());
         Assert.Contains("interface", type.TypeName);
+        Assert.Equal(2, type.ItemCount);
         Assert.Equal(IntPtr.Size * 2, type.NativeSize);
     }
 
