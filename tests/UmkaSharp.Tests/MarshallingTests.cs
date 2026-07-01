@@ -984,6 +984,118 @@ public sealed class MarshallingTests
     }
 
     [Fact]
+    public void Function_type_metadata_covers_public_reflection_shapes()
+    {
+        NativeTestEnvironment.RequireNativeShim();
+
+        using var runtime = UmkaRuntime.FromSource("""
+            type Color = enum {
+                red
+                green
+            }
+
+            type Pair = struct {
+                x, y: int
+            }
+
+            type Drawable = interface {
+                area(): real
+            }
+
+            fn plusOne(x: int): int {
+                return x + 1
+            }
+
+            fn shapeMetadata*(
+                scalar: int,
+                color: Color,
+                pair: Pair,
+                pairs: [2]Pair,
+                values: []int,
+                matrix: [][]int,
+                scores: map[str]int,
+                anything: any,
+                drawable: Drawable,
+                callback: fn (x: int): int,
+                worker: fiber): int {
+                return scalar
+            }
+
+            fn variadicMetadata*(values: ..int): int {
+                return len(values)
+            }
+
+            fn directCallable*(): fn (x: int): int {
+                return plusOne
+            }
+
+            fn closureCallable*(): fn (x: int): int {
+                return fn (x: int): int {
+                    return x + 2
+                }
+            }
+            """);
+
+        runtime.Compile();
+
+        var shape = runtime.GetFunction("shapeMetadata");
+        Assert.Equal(11, shape.ParameterCount);
+
+        var types = shape.ParameterTypes;
+        Assert.Equal(UmkaTypeKind.SignedInteger, types[0].Kind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, types[1].Kind);
+        Assert.True(types[1].IsEnum);
+        Assert.Collection(
+            types[1].EnumMembers,
+            member => AssertEnumMember(member, "red", 0, 0),
+            member => AssertEnumMember(member, "green", 1, 1));
+        Assert.Equal(UmkaTypeKind.Struct, types[2].Kind);
+        Assert.Equal(Marshal.SizeOf<IntPair>(), types[2].NativeSize);
+        Assert.False(types[2].HasReferences);
+        Assert.Equal(UmkaTypeKind.StaticArray, types[3].Kind);
+        Assert.Equal(2, types[3].ItemCount);
+        Assert.Equal(UmkaTypeKind.Struct, types[3].ElementKind);
+        Assert.Equal(2 * Marshal.SizeOf<IntPair>(), types[3].NativeSize);
+        Assert.Equal(UmkaTypeKind.DynamicArray, types[4].Kind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, types[4].ElementKind);
+        Assert.Equal(8, types[4].ElementNativeSize);
+        Assert.False(types[4].ElementHasReferences);
+        Assert.Equal(UmkaTypeKind.DynamicArray, types[5].Kind);
+        Assert.Equal(UmkaTypeKind.DynamicArray, types[5].ElementKind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, types[5].NestedElementKind);
+        Assert.Equal(8, types[5].NestedElementNativeSize);
+        Assert.False(types[5].NestedElementHasReferences);
+        Assert.Equal(UmkaTypeKind.Map, types[6].Kind);
+        Assert.Equal(UmkaTypeKind.String, types[6].MapKeyKind);
+        Assert.Equal(UmkaTypeKind.SignedInteger, types[6].MapValueKind);
+        Assert.True(types[6].MapKeyHasReferences);
+        Assert.False(types[6].MapValueHasReferences);
+        AssertAnyMetadata(types[7]);
+        AssertInterfaceMetadata(types[8], expectedItemCount: 3);
+        Assert.Equal(UmkaTypeKind.Closure, types[9].Kind);
+        Assert.True(types[9].IsCallable);
+        AssertFiberMetadata(types[10]);
+        Assert.Equal(UmkaTypeKind.SignedInteger, shape.ResultType.Kind);
+
+        var variadic = runtime.GetFunction("variadicMetadata");
+        var variadicType = Assert.Single(variadic.ParameterTypes);
+        Assert.Equal(UmkaTypeKind.DynamicArray, variadicType.Kind);
+        Assert.True(variadicType.IsVariadicParameterList);
+        Assert.Equal(UmkaTypeKind.SignedInteger, variadicType.ElementKind);
+
+        var directCallable = runtime.GetFunction("directCallable");
+        Assert.True(directCallable.ResultType.IsCallable);
+        using var retainedDirect = directCallable.CallNativeValue();
+        Assert.True(retainedDirect.Type.IsCallable);
+        Assert.Equal(4, retainedDirect.AsCallable().CallInt64(UmkaValue.From(3)));
+
+        var closureCallable = runtime.GetFunction("closureCallable");
+        Assert.True(closureCallable.ResultType.IsCallable);
+        using var retainedClosure = closureCallable.CallNativeValue();
+        Assert.Equal(5, retainedClosure.AsCallable().CallInt64(UmkaValue.From(3)));
+    }
+
+    [Fact]
     public void Function_rejects_argument_type_mismatches_before_native_call()
     {
         NativeTestEnvironment.RequireNativeShim();

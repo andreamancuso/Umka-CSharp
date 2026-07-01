@@ -19,10 +19,12 @@ cmake --build native/build --config Release
 CI does not build against a moving Umka branch. `.github/workflows/ci.yml` pins `andreamancuso/umka-lang` through `UMKA_REF`:
 
 ```text
-4cbf92ac216be0e4088ddc61aa0589df43ed066d
+261f62fbf76549a93284cee24f6c40764cdbb21b
 ```
 
 When changing the Umka baseline, first update and test the local `C:\dev\umka-lang` checkout, push the public fork, then update `UMKA_REF` in the workflow to the verified fork commit.
+
+The shim gets type/reflection facts through the public Umka host API. Remaining direct engine access is limited to runtime status/error plumbing, exported function discovery, leak-check suppression during host cleanup, compile-warning callback cleanup, predeclared scalar type lookup for `any` construction, and scalar/string/pointer default parameter materialization. Default materialization still reads Umka's internal `Const` values because the public API exposes default counts but not a helper that applies default values to an `UmkaFuncContext`.
 
 On Windows with Visual Studio 2022 but no CMake on `PATH`, use:
 

@@ -41,10 +41,17 @@ static const Type *ushim_context_get_parameter_type(UmkaFuncContext *function, i
 static const Type *ushim_context_get_result_type(UmkaFuncContext *function);
 static const Type *ushim_callback_get_parameter_type(UmkaStackSlot *params, int index);
 static const Type *ushim_callback_get_result_type(UmkaStackSlot *params, UmkaStackSlot *result);
+static int ushim_type_kind(const Type *type);
+static int ushim_type_size(const Type *type);
+static int ushim_type_item_count(const Type *type);
+static int ushim_type_has_references(const Type *type);
+static int ushim_type_is_enum(const Type *type);
+static int ushim_type_enum_member_count(const Type *type);
+static const char *ushim_type_enum_member_name(const Type *type, int index);
+static int64_t ushim_type_enum_member_signed_value(const Type *type, int index);
+static uint64_t ushim_type_enum_member_unsigned_value(const Type *type, int index);
 static const Type *ushim_type_element_type(const Type *type);
 static const char *ushim_type_name(const Type *type);
-static const Type *ushim_enum_type(const Type *type);
-static const EnumConst *ushim_enum_member(const Type *type, int index);
 static int ushim_type_element_kind(const Type *type);
 static int ushim_type_element_size(const Type *type);
 static int ushim_type_element_has_references(const Type *type);
@@ -96,6 +103,56 @@ static int ushim_try(Umka *umka, int (*body)(Umka *umka, void *data), void *data
         return body(umka, data);
 
     return ushim_status(umka);
+}
+
+static int ushim_type_kind(const Type *type)
+{
+    return (int)umkaGetTypeKind((const UmkaType *)type);
+}
+
+static int ushim_type_size(const Type *type)
+{
+    return umkaGetTypeSize((const UmkaType *)type);
+}
+
+static int ushim_type_item_count(const Type *type)
+{
+    return umkaGetTypeItemCount((const UmkaType *)type);
+}
+
+static int ushim_type_has_references(const Type *type)
+{
+    return umkaTypeHasReferences((const UmkaType *)type) ? 1 : 0;
+}
+
+static int ushim_type_is_enum(const Type *type)
+{
+    return umkaGetEnumMemberCount((const UmkaType *)type) > 0 ? 1 : 0;
+}
+
+static int ushim_type_enum_member_count(const Type *type)
+{
+    return umkaGetEnumMemberCount((const UmkaType *)type);
+}
+
+static const char *ushim_type_enum_member_name(const Type *type, int index)
+{
+    const char *name = NULL;
+    return umkaGetEnumMember((const UmkaType *)type, index, &name, NULL, NULL) ? name : NULL;
+}
+
+static int64_t ushim_type_enum_member_signed_value(const Type *type, int index)
+{
+    int64_t value = 0;
+    (void)umkaGetEnumMember((const UmkaType *)type, index, NULL, &value, NULL);
+    return value;
+}
+
+static uint64_t ushim_type_enum_member_unsigned_value(const Type *type, int index)
+{
+    uint64_t value = 0;
+    (void)umkaGetEnumMember((const UmkaType *)type, index, NULL, NULL, &value);
+    return value;
 }
 
 static void ushim_managed_callback(UmkaStackSlot *params, UmkaStackSlot *result)
@@ -274,7 +331,7 @@ static int ushim_get_function_body(Umka *umka, void *data)
     }
 
     const Ident *fnIdent = identFind(&umka->idents, &umka->modules, &umka->blocks, module, fn->functionName, NULL, false);
-    if (!fnIdent || !fnIdent->isExported || fnIdent->kind != IDENT_CONST || fnIdent->type->kind != TYPE_FN)
+    if (!fnIdent || !fnIdent->isExported || fnIdent->kind != IDENT_CONST || ushim_type_kind(fnIdent->type) != TYPE_FN)
         return USHIM_NOT_FOUND;
 
     identSetUsed(fnIdent);
@@ -300,14 +357,15 @@ USHIM_EXPORT int ushim_context_call_retain_result(Umka *umka, UmkaFuncContext *f
         *handle = NULL;
 
     const Type *type = ushim_context_get_result_type(function);
-    if (!umka || !function || !type || type->kind == TYPE_VOID || !handle)
+    if (!umka || !function || !type || ushim_type_kind(type) == TYPE_VOID || !handle)
         return 1;
 
     void *buffer = NULL;
     const int usesBuffer = ushim_type_uses_indirect_value_slot(type);
     if (usesBuffer)
     {
-        buffer = calloc(1, type->size > 0 ? (size_t)type->size : 1);
+        const int typeSize = ushim_type_size(type);
+        buffer = calloc(1, typeSize > 0 ? (size_t)typeSize : 1);
         if (!buffer)
             return 1;
 
@@ -379,14 +437,15 @@ USHIM_EXPORT int ushim_callable_call_retain_result(Umka *umka, UmkaHostHandle *c
         *handle = NULL;
 
     const Type *type = ushim_context_get_result_type(function);
-    if (!umka || !function || !type || type->kind == TYPE_VOID || !handle || !umkaHostHandleValid(callable))
+    if (!umka || !function || !type || ushim_type_kind(type) == TYPE_VOID || !handle || !umkaHostHandleValid(callable))
         return 1;
 
     void *buffer = NULL;
     const int usesBuffer = ushim_type_uses_indirect_value_slot(type);
     if (usesBuffer)
     {
-        buffer = calloc(1, type->size > 0 ? (size_t)type->size : 1);
+        const int typeSize = ushim_type_size(type);
+        buffer = calloc(1, typeSize > 0 ? (size_t)typeSize : 1);
         if (!buffer)
             return 1;
 
@@ -621,25 +680,25 @@ USHIM_EXPORT int ushim_native_value_any_self_state(UmkaHostHandle *handle)
 USHIM_EXPORT int ushim_native_value_any_get_payload_kind(UmkaHostHandle *handle)
 {
     const Type *type = ushim_native_value_any_payload_type(handle, NULL);
-    return type ? type->kind : TYPE_NONE;
+    return ushim_type_kind(type);
 }
 
 USHIM_EXPORT int ushim_native_value_any_get_payload_size(UmkaHostHandle *handle)
 {
     const Type *type = ushim_native_value_any_payload_type(handle, NULL);
-    return type ? type->size : 0;
+    return ushim_type_size(type);
 }
 
 USHIM_EXPORT int ushim_native_value_any_get_payload_item_count(UmkaHostHandle *handle)
 {
     const Type *type = ushim_native_value_any_payload_type(handle, NULL);
-    return type ? type->numItems : 0;
+    return ushim_type_item_count(type);
 }
 
 USHIM_EXPORT int ushim_native_value_any_get_payload_has_references(UmkaHostHandle *handle)
 {
     const Type *type = ushim_native_value_any_payload_type(handle, NULL);
-    return type && type->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(type);
 }
 
 USHIM_EXPORT const char *ushim_native_value_any_get_payload_type_name(UmkaHostHandle *handle)
@@ -754,31 +813,27 @@ USHIM_EXPORT int ushim_native_value_any_get_payload_is_variadic_parameter_list(U
 
 USHIM_EXPORT int ushim_native_value_any_get_payload_is_enum(UmkaHostHandle *handle)
 {
-    return ushim_enum_type(ushim_native_value_any_payload_type(handle, NULL)) ? 1 : 0;
+    return ushim_type_is_enum(ushim_native_value_any_payload_type(handle, NULL));
 }
 
 USHIM_EXPORT int ushim_native_value_any_get_payload_enum_member_count(UmkaHostHandle *handle)
 {
-    const Type *type = ushim_enum_type(ushim_native_value_any_payload_type(handle, NULL));
-    return type ? type->numItems : 0;
+    return ushim_type_enum_member_count(ushim_native_value_any_payload_type(handle, NULL));
 }
 
 USHIM_EXPORT const char *ushim_native_value_any_get_payload_enum_member_name(UmkaHostHandle *handle, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
-    return member ? member->name : NULL;
+    return ushim_type_enum_member_name(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_native_value_any_get_payload_enum_member_signed_value(UmkaHostHandle *handle, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
-    return member ? member->val.intVal : 0;
+    return ushim_type_enum_member_signed_value(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
 }
 
 USHIM_EXPORT uint64_t ushim_native_value_any_get_payload_enum_member_unsigned_value(UmkaHostHandle *handle, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
-    return member ? member->val.uintVal : 0;
+    return ushim_type_enum_member_unsigned_value(ushim_native_value_any_payload_type(handle, NULL), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_native_value_any_get_payload_int(UmkaHostHandle *handle)
@@ -799,7 +854,7 @@ USHIM_EXPORT double ushim_native_value_any_get_payload_real(UmkaHostHandle *hand
 {
     UmkaStackSlot payload = {0};
     const Type *type = ushim_native_value_any_payload_type(handle, &payload);
-    return type && type->kind == TYPE_REAL32 ? payload.real32Val : payload.realVal;
+    return ushim_type_kind(type) == TYPE_REAL32 ? payload.real32Val : payload.realVal;
 }
 
 USHIM_EXPORT void *ushim_native_value_any_get_payload_ptr(UmkaHostHandle *handle)
@@ -813,7 +868,7 @@ USHIM_EXPORT const char *ushim_native_value_any_get_payload_string(UmkaHostHandl
 {
     UmkaStackSlot payload = {0};
     const Type *type = ushim_native_value_any_payload_type(handle, &payload);
-    return type && type->kind == TYPE_STR ? (const char *)payload.ptrVal : NULL;
+    return ushim_type_kind(type) == TYPE_STR ? (const char *)payload.ptrVal : NULL;
 }
 
 USHIM_EXPORT int ushim_native_value_any_retain_payload(Umka *umka, UmkaHostHandle *handle, UmkaHostHandle **payloadHandle)
@@ -852,42 +907,12 @@ static int ushim_context_get_explicit_argument_count(UmkaFuncContext *function)
 
 static int ushim_type_uses_indirect_value_slot(const Type *type)
 {
-    if (!type)
-        return 0;
-
-    switch (type->kind)
-    {
-        case TYPE_ARRAY:
-        case TYPE_DYNARRAY:
-        case TYPE_MAP:
-        case TYPE_STRUCT:
-        case TYPE_INTERFACE:
-        case TYPE_CLOSURE:
-            return 1;
-
-        default:
-            return 0;
-    }
+    return umkaTypeUsesIndirectValueSlot((const UmkaType *)type) ? 1 : 0;
 }
 
 static const Type *ushim_callable_function_type(const Type *type)
 {
-    if (!type)
-        return NULL;
-
-    if (type->kind == TYPE_FN)
-        return type;
-
-    if (type->kind == TYPE_CLOSURE
-        && type->numItems > 0
-        && type->field[0]
-        && type->field[0]->type
-        && type->field[0]->type->kind == TYPE_FN)
-    {
-        return type->field[0]->type;
-    }
-
-    return NULL;
+    return (const Type *)umkaGetCallableFuncType((const UmkaType *)type);
 }
 
 static UmkaStackSlot ushim_value_from_storage(const Type *type, UmkaStackSlot *storage)
@@ -919,10 +944,11 @@ static int ushim_native_value_assign_to_storage(const Type *type, void *dest, Um
 
     if (ushim_type_uses_indirect_value_slot(type))
     {
-        if (!value.ptrVal || type->size < 0)
+        const int typeSize = ushim_type_size(type);
+        if (!value.ptrVal || typeSize < 0)
             return 1;
 
-        memcpy(dest, value.ptrVal, (size_t)type->size);
+        memcpy(dest, value.ptrVal, (size_t)typeSize);
         return 0;
     }
 
@@ -936,7 +962,7 @@ static int ushim_native_value_assign_to_interface_storage(Umka *umka, const Type
         return 1;
 
     const Type *source = (const Type *)umkaGetHostHandleType(handle);
-    if (!source || source->kind != TYPE_STRUCT)
+    if (ushim_type_kind(source) != TYPE_STRUCT)
         return 1;
 
     UmkaStackSlot value = umkaGetHostHandleValue(handle);
@@ -946,17 +972,17 @@ static int ushim_native_value_assign_to_interface_storage(Umka *umka, const Type
 static int ushim_native_value_type_matches(const Type *target, const UmkaHostHandle *handle)
 {
     const Type *source = (const Type *)umkaGetHostHandleType(handle);
-    return target && source && typeEquivalent(target, source);
+    return target && source && umkaTypesEquivalent((const UmkaType *)target, (const UmkaType *)source) ? 1 : 0;
 }
 
 static int ushim_type_is_any(const Type *type)
 {
-    return type && type->kind == TYPE_INTERFACE && type->numItems == 2;
+    return ushim_type_kind(type) == TYPE_INTERFACE && ushim_type_item_count(type) == 2;
 }
 
 static int ushim_type_is_non_empty_interface(const Type *type)
 {
-    return type && type->kind == TYPE_INTERFACE && type->numItems > 2;
+    return ushim_type_kind(type) == TYPE_INTERFACE && ushim_type_item_count(type) > 2;
 }
 
 static UmkaAny *ushim_native_value_any_ptr(const UmkaHostHandle *handle)
@@ -1057,7 +1083,7 @@ USHIM_EXPORT int ushim_context_set_arg_real(Umka *umka, UmkaFuncContext *functio
         return 1;
 
     const Type *type = ushim_context_get_parameter_type(function, index);
-    if (type && type->kind == TYPE_REAL32)
+    if (ushim_type_kind(type) == TYPE_REAL32)
         slot->real32Val = (float)value;
     else
         slot->realVal = value;
@@ -1135,13 +1161,13 @@ USHIM_EXPORT int ushim_context_get_result_size(UmkaFuncContext *function)
         return 0;
 
     const UmkaType *type = umkaGetResultType(function->params, function->result);
-    return type ? ((const Type *)type)->size : 0;
+    return umkaGetTypeSize(type);
 }
 
 USHIM_EXPORT int ushim_context_get_result_item_count(UmkaFuncContext *function)
 {
     const Type *type = ushim_context_get_result_type(function);
-    return type ? type->numItems : 0;
+    return ushim_type_item_count(type);
 }
 
 USHIM_EXPORT int ushim_context_get_argument_count(UmkaFuncContext *function)
@@ -1152,7 +1178,7 @@ USHIM_EXPORT int ushim_context_get_argument_count(UmkaFuncContext *function)
 USHIM_EXPORT int ushim_context_get_default_argument_count(UmkaFuncContext *function)
 {
     const Type *type = ushim_context_get_function_type(function);
-    return type && type->kind == TYPE_FN ? type->sig->numDefaultParams : 0;
+    return umkaGetFuncDefaultParamCount((const UmkaType *)type);
 }
 
 USHIM_EXPORT int ushim_context_get_required_argument_count(UmkaFuncContext *function)
@@ -1173,7 +1199,7 @@ static const Type *ushim_context_get_parameter_type(UmkaFuncContext *function, i
 static int ushim_context_set_default_argument(Umka *umka, UmkaFuncContext *function, int index)
 {
     const Type *fnType = ushim_context_get_function_type(function);
-    if (!fnType || fnType->kind != TYPE_FN)
+    if (ushim_type_kind(fnType) != TYPE_FN)
         return 1;
 
     const int explicitCount = ushim_context_get_explicit_argument_count(function);
@@ -1181,14 +1207,19 @@ static int ushim_context_set_default_argument(Umka *umka, UmkaFuncContext *funct
         return 1;
 
     const int sigIndex = index + 1;    // Skip the hidden upvalue/self slot.
+    /*
+     * Umka's public API exposes default parameter counts but not the raw
+     * default Const values, so this is intentionally isolated until the fork
+     * provides a helper that applies defaults to an UmkaFuncContext.
+     */
     const Param *param = fnType->sig->param[sigIndex];
-    const Type *type = param ? param->type : NULL;
+    const Type *type = param ? (const Type *)umkaGetFuncParamType((const UmkaType *)fnType, index) : NULL;
     UmkaStackSlot *slot = ushim_param(function->params, index);
     if (!type || !slot)
         return 1;
 
     const Const value = param->defaultVal;
-    switch (type->kind)
+    switch (ushim_type_kind(type))
     {
         case TYPE_INT8:
         case TYPE_INT16:
@@ -1259,50 +1290,32 @@ static const char *ushim_type_name(const Type *type)
         return NULL;
 
     buf[0] = '\0';
-    return typeSpelling(type, buf);
-}
-
-static const Type *ushim_enum_type(const Type *type)
-{
-    return type && type->isEnum ? type : NULL;
-}
-
-static const EnumConst *ushim_enum_member(const Type *type, int index)
-{
-    const Type *enumType = ushim_enum_type(type);
-    if (!enumType || index < 0 || index >= enumType->numItems)
-        return NULL;
-
-    return enumType->enumConst[index];
+    (void)umkaGetTypeSpelling((const UmkaType *)type, buf, DEFAULT_STR_LEN + 1);
+    return buf;
 }
 
 static const Type *ushim_type_element_type(const Type *type)
 {
-    if (!type)
-        return NULL;
-
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_DYNARRAY)
-        return type->base;
-
-    return NULL;
+    const int kind = ushim_type_kind(type);
+    return kind == TYPE_ARRAY || kind == TYPE_DYNARRAY ? (const Type *)umkaGetBaseType((const UmkaType *)type) : NULL;
 }
 
 static int ushim_type_element_kind(const Type *type)
 {
     const Type *elementType = ushim_type_element_type(type);
-    return elementType ? elementType->kind : TYPE_NONE;
+    return ushim_type_kind(elementType);
 }
 
 static int ushim_type_element_size(const Type *type)
 {
     const Type *elementType = ushim_type_element_type(type);
-    return elementType ? elementType->size : 0;
+    return ushim_type_size(elementType);
 }
 
 static int ushim_type_element_has_references(const Type *type)
 {
     const Type *elementType = ushim_type_element_type(type);
-    return elementType && elementType->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(elementType);
 }
 
 static const char *ushim_type_element_name(const Type *type)
@@ -1313,7 +1326,7 @@ static const char *ushim_type_element_name(const Type *type)
 static const Type *ushim_type_nested_dynarray_element_type(const Type *type)
 {
     const Type *elementType = ushim_type_element_type(type);
-    if (!type || type->kind != TYPE_DYNARRAY || !elementType || elementType->kind != TYPE_DYNARRAY)
+    if (ushim_type_kind(type) != TYPE_DYNARRAY || ushim_type_kind(elementType) != TYPE_DYNARRAY)
         return NULL;
 
     return ushim_type_element_type(elementType);
@@ -1322,19 +1335,19 @@ static const Type *ushim_type_nested_dynarray_element_type(const Type *type)
 static int ushim_type_nested_dynarray_element_kind(const Type *type)
 {
     const Type *elementType = ushim_type_nested_dynarray_element_type(type);
-    return elementType ? elementType->kind : TYPE_NONE;
+    return ushim_type_kind(elementType);
 }
 
 static int ushim_type_nested_dynarray_element_size(const Type *type)
 {
     const Type *elementType = ushim_type_nested_dynarray_element_type(type);
-    return elementType ? elementType->size : 0;
+    return ushim_type_size(elementType);
 }
 
 static int ushim_type_nested_dynarray_element_has_references(const Type *type)
 {
     const Type *elementType = ushim_type_nested_dynarray_element_type(type);
-    return elementType && elementType->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(elementType);
 }
 
 static const char *ushim_type_nested_dynarray_element_name(const Type *type)
@@ -1344,48 +1357,48 @@ static const char *ushim_type_nested_dynarray_element_name(const Type *type)
 
 static const Type *ushim_type_map_key_type(const Type *type)
 {
-    return type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    return (const Type *)umkaGetMapKeyType((const UmkaType *)type);
 }
 
 static const Type *ushim_type_map_value_type(const Type *type)
 {
-    return type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    return (const Type *)umkaGetMapItemType((const UmkaType *)type);
 }
 
 static int ushim_type_map_key_kind(const Type *type)
 {
     const Type *keyType = ushim_type_map_key_type(type);
-    return keyType ? keyType->kind : TYPE_NONE;
+    return ushim_type_kind(keyType);
 }
 
 static int ushim_type_map_value_kind(const Type *type)
 {
     const Type *valueType = ushim_type_map_value_type(type);
-    return valueType ? valueType->kind : TYPE_NONE;
+    return ushim_type_kind(valueType);
 }
 
 static int ushim_type_map_key_size(const Type *type)
 {
     const Type *keyType = ushim_type_map_key_type(type);
-    return keyType ? keyType->size : 0;
+    return ushim_type_size(keyType);
 }
 
 static int ushim_type_map_value_size(const Type *type)
 {
     const Type *valueType = ushim_type_map_value_type(type);
-    return valueType ? valueType->size : 0;
+    return ushim_type_size(valueType);
 }
 
 static int ushim_type_map_key_has_references(const Type *type)
 {
     const Type *keyType = ushim_type_map_key_type(type);
-    return keyType && keyType->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(keyType);
 }
 
 static int ushim_type_map_value_has_references(const Type *type)
 {
     const Type *valueType = ushim_type_map_value_type(type);
-    return valueType && valueType->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(valueType);
 }
 
 static const char *ushim_type_map_key_name(const Type *type)
@@ -1420,25 +1433,25 @@ static const char *ushim_type_map_value_element_name(const Type *type)
 
 static int ushim_type_is_variadic_parameter_list(const Type *type)
 {
-    return type && type->isVariadicParamList ? 1 : 0;
+    return umkaTypeIsVariadicParamList((const UmkaType *)type) ? 1 : 0;
 }
 
 USHIM_EXPORT int ushim_context_get_parameter_kind(UmkaFuncContext *function, int index)
 {
     const Type *type = ushim_context_get_parameter_type(function, index);
-    return type ? type->kind : TYPE_NONE;
+    return ushim_type_kind(type);
 }
 
 USHIM_EXPORT int ushim_context_get_parameter_size(UmkaFuncContext *function, int index)
 {
     const Type *type = ushim_context_get_parameter_type(function, index);
-    return type ? type->size : 0;
+    return ushim_type_size(type);
 }
 
 USHIM_EXPORT int ushim_context_get_parameter_item_count(UmkaFuncContext *function, int index)
 {
     const Type *type = ushim_context_get_parameter_type(function, index);
-    return type ? type->numItems : 0;
+    return ushim_type_item_count(type);
 }
 
 USHIM_EXPORT int ushim_context_get_parameter_element_kind(UmkaFuncContext *function, int index)
@@ -1549,13 +1562,13 @@ USHIM_EXPORT int ushim_context_get_parameter_is_variadic_parameter_list(UmkaFunc
 USHIM_EXPORT int ushim_context_get_parameter_has_references(UmkaFuncContext *function, int index)
 {
     const Type *type = ushim_context_get_parameter_type(function, index);
-    return type && type->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(type);
 }
 
 USHIM_EXPORT int ushim_context_get_result_has_references(UmkaFuncContext *function)
 {
     const Type *type = ushim_context_get_result_type(function);
-    return type && type->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(type);
 }
 
 USHIM_EXPORT const char *ushim_context_get_parameter_type_name(UmkaFuncContext *function, int index)
@@ -1565,37 +1578,33 @@ USHIM_EXPORT const char *ushim_context_get_parameter_type_name(UmkaFuncContext *
 
 USHIM_EXPORT int ushim_context_get_parameter_is_enum(UmkaFuncContext *function, int index)
 {
-    return ushim_enum_type(ushim_context_get_parameter_type(function, index)) ? 1 : 0;
+    return ushim_type_is_enum(ushim_context_get_parameter_type(function, index));
 }
 
 USHIM_EXPORT int ushim_context_get_parameter_enum_member_count(UmkaFuncContext *function, int index)
 {
-    const Type *type = ushim_enum_type(ushim_context_get_parameter_type(function, index));
-    return type ? type->numItems : 0;
+    return ushim_type_enum_member_count(ushim_context_get_parameter_type(function, index));
 }
 
 USHIM_EXPORT const char *ushim_context_get_parameter_enum_member_name(UmkaFuncContext *function, int parameterIndex, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_context_get_parameter_type(function, parameterIndex), memberIndex);
-    return member ? member->name : NULL;
+    return ushim_type_enum_member_name(ushim_context_get_parameter_type(function, parameterIndex), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_context_get_parameter_enum_member_signed_value(UmkaFuncContext *function, int parameterIndex, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_context_get_parameter_type(function, parameterIndex), memberIndex);
-    return member ? member->val.intVal : 0;
+    return ushim_type_enum_member_signed_value(ushim_context_get_parameter_type(function, parameterIndex), memberIndex);
 }
 
 USHIM_EXPORT uint64_t ushim_context_get_parameter_enum_member_unsigned_value(UmkaFuncContext *function, int parameterIndex, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_context_get_parameter_type(function, parameterIndex), memberIndex);
-    return member ? member->val.uintVal : 0;
+    return ushim_type_enum_member_unsigned_value(ushim_context_get_parameter_type(function, parameterIndex), memberIndex);
 }
 
 USHIM_EXPORT int ushim_context_get_result_kind(UmkaFuncContext *function)
 {
     const Type *type = ushim_context_get_result_type(function);
-    return type ? type->kind : TYPE_VOID;
+    return type ? ushim_type_kind(type) : TYPE_VOID;
 }
 
 USHIM_EXPORT int ushim_context_get_result_element_kind(UmkaFuncContext *function)
@@ -1711,31 +1720,27 @@ USHIM_EXPORT const char *ushim_context_get_result_type_name(UmkaFuncContext *fun
 
 USHIM_EXPORT int ushim_context_get_result_is_enum(UmkaFuncContext *function)
 {
-    return ushim_enum_type(ushim_context_get_result_type(function)) ? 1 : 0;
+    return ushim_type_is_enum(ushim_context_get_result_type(function));
 }
 
 USHIM_EXPORT int ushim_context_get_result_enum_member_count(UmkaFuncContext *function)
 {
-    const Type *type = ushim_enum_type(ushim_context_get_result_type(function));
-    return type ? type->numItems : 0;
+    return ushim_type_enum_member_count(ushim_context_get_result_type(function));
 }
 
 USHIM_EXPORT const char *ushim_context_get_result_enum_member_name(UmkaFuncContext *function, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_context_get_result_type(function), memberIndex);
-    return member ? member->name : NULL;
+    return ushim_type_enum_member_name(ushim_context_get_result_type(function), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_context_get_result_enum_member_signed_value(UmkaFuncContext *function, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_context_get_result_type(function), memberIndex);
-    return member ? member->val.intVal : 0;
+    return ushim_type_enum_member_signed_value(ushim_context_get_result_type(function), memberIndex);
 }
 
 USHIM_EXPORT uint64_t ushim_context_get_result_enum_member_unsigned_value(UmkaFuncContext *function, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_context_get_result_type(function), memberIndex);
-    return member ? member->val.uintVal : 0;
+    return ushim_type_enum_member_unsigned_value(ushim_context_get_result_type(function), memberIndex);
 }
 
 USHIM_EXPORT int ushim_context_set_result_buffer(UmkaFuncContext *function, void *buffer)
@@ -1752,7 +1757,7 @@ USHIM_EXPORT int ushim_context_set_arg_data(Umka *umka, UmkaFuncContext *functio
     (void)umka;
     UmkaStackSlot *slot = function ? ushim_param(function->params, index) : NULL;
     const Type *type = ushim_context_get_parameter_type(function, index);
-    if (!slot || !type || !value || size != type->size || type->isGarbageCollected)
+    if (!slot || !type || !value || size != ushim_type_size(type) || ushim_type_has_references(type))
         return 1;
 
     memcpy(slot, value, size);
@@ -1761,7 +1766,7 @@ USHIM_EXPORT int ushim_context_set_arg_data(Umka *umka, UmkaFuncContext *functio
 
 static int ushim_dynarray_byte_count(const DynArray *array, int *byteCount)
 {
-    if (!array || !array->type || !array->type->base || !byteCount)
+    if (!array || !array->type || !ushim_type_element_type((const Type *)array->type) || !byteCount)
         return 1;
 
     const int len = umkaGetDynArrayLen(array);
@@ -1779,10 +1784,10 @@ static int ushim_dynarray_byte_count(const DynArray *array, int *byteCount)
 static int ushim_dynarray_type_accepts_bytes(const Type *type, int elementSize)
 {
     const Type *elementType = ushim_type_element_type(type);
-    if (!type || type->kind != TYPE_DYNARRAY || !elementType || elementSize <= 0)
+    if (ushim_type_kind(type) != TYPE_DYNARRAY || !elementType || elementSize <= 0)
         return 0;
 
-    if (elementType->isGarbageCollected || elementType->size != elementSize)
+    if (ushim_type_has_references(elementType) || ushim_type_size(elementType) != elementSize)
         return 0;
 
     return 1;
@@ -1792,10 +1797,10 @@ static int ushim_dynarray_type_accepts_strings(const Type *type)
 {
     const Type *elementType = ushim_type_element_type(type);
     return type
-        && type->kind == TYPE_DYNARRAY
+        && ushim_type_kind(type) == TYPE_DYNARRAY
         && elementType
-        && elementType->kind == TYPE_STR
-        && elementType->size == (int)sizeof(char *);
+        && ushim_type_kind(elementType) == TYPE_STR
+        && ushim_type_size(elementType) == (int)sizeof(char *);
 }
 
 static int ushim_dynarray_type_accepts_nested_bytes(const Type *type, int elementSize)
@@ -1803,17 +1808,17 @@ static int ushim_dynarray_type_accepts_nested_bytes(const Type *type, int elemen
     const Type *outerElementType = ushim_type_element_type(type);
     const Type *innerElementType = ushim_type_nested_dynarray_element_type(type);
     if (!type
-        || type->kind != TYPE_DYNARRAY
+        || ushim_type_kind(type) != TYPE_DYNARRAY
         || !outerElementType
-        || outerElementType->kind != TYPE_DYNARRAY
-        || outerElementType->size != (int)sizeof(DynArray)
+        || ushim_type_kind(outerElementType) != TYPE_DYNARRAY
+        || ushim_type_size(outerElementType) != (int)sizeof(DynArray)
         || !innerElementType
         || elementSize <= 0)
     {
         return 0;
     }
 
-    if (innerElementType->isGarbageCollected || innerElementType->size != elementSize)
+    if (ushim_type_has_references(innerElementType) || ushim_type_size(innerElementType) != elementSize)
         return 0;
 
     return 1;
@@ -1824,13 +1829,13 @@ static int ushim_dynarray_type_accepts_nested_strings(const Type *type)
     const Type *outerElementType = ushim_type_element_type(type);
     const Type *innerElementType = ushim_type_nested_dynarray_element_type(type);
     return type
-        && type->kind == TYPE_DYNARRAY
+        && ushim_type_kind(type) == TYPE_DYNARRAY
         && outerElementType
-        && outerElementType->kind == TYPE_DYNARRAY
-        && outerElementType->size == (int)sizeof(DynArray)
+        && ushim_type_kind(outerElementType) == TYPE_DYNARRAY
+        && ushim_type_size(outerElementType) == (int)sizeof(DynArray)
         && innerElementType
-        && innerElementType->kind == TYPE_STR
-        && innerElementType->size == (int)sizeof(char *);
+        && ushim_type_kind(innerElementType) == TYPE_STR
+        && ushim_type_size(innerElementType) == (int)sizeof(char *);
 }
 
 static int ushim_map_slot_type_accepts_host_value(const Type *type)
@@ -1838,7 +1843,7 @@ static int ushim_map_slot_type_accepts_host_value(const Type *type)
     if (!type)
         return 0;
 
-    switch (type->kind)
+    switch (ushim_type_kind(type))
     {
         case TYPE_INT8:
         case TYPE_INT16:
@@ -1859,7 +1864,7 @@ static int ushim_map_slot_type_accepts_host_value(const Type *type)
 
         case TYPE_ARRAY:
         case TYPE_STRUCT:
-            return !typeHasPtr(type, true);
+            return !ushim_type_has_references(type);
 
         default:
             return 0;
@@ -1869,53 +1874,53 @@ static int ushim_map_slot_type_accepts_host_value(const Type *type)
 static int ushim_map_slot_type_accepts_bytes(const Type *type, int size)
 {
     return type
-        && type->kind != TYPE_STR
+        && ushim_type_kind(type) != TYPE_STR
         && ushim_map_slot_type_accepts_host_value(type)
-        && size == type->size;
+        && size == ushim_type_size(type);
 }
 
 static int ushim_map_type_accepts_bytes(const Type *type, int keySize, int valueSize)
 {
     return type
-        && type->kind == TYPE_MAP
-        && ushim_map_slot_type_accepts_bytes(typeMapKey(type), keySize)
-        && ushim_map_slot_type_accepts_bytes(typeMapItem(type), valueSize);
+        && ushim_type_kind(type) == TYPE_MAP
+        && ushim_map_slot_type_accepts_bytes(ushim_type_map_key_type(type), keySize)
+        && ushim_map_slot_type_accepts_bytes(ushim_type_map_value_type(type), valueSize);
 }
 
 static int ushim_map_type_accepts_string_key_bytes_value(const Type *type, int valueSize)
 {
-    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    const Type *keyType = ushim_type_map_key_type(type);
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && keyType
-        && keyType->kind == TYPE_STR
-        && keyType->size == (int)sizeof(char *)
-        && ushim_map_slot_type_accepts_bytes(typeMapItem(type), valueSize);
+        && ushim_type_kind(keyType) == TYPE_STR
+        && ushim_type_size(keyType) == (int)sizeof(char *)
+        && ushim_map_slot_type_accepts_bytes(ushim_type_map_value_type(type), valueSize);
 }
 
 static int ushim_map_type_accepts_bytes_key_string_value(const Type *type, int keySize)
 {
-    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    const Type *valueType = ushim_type_map_value_type(type);
     return type
-        && type->kind == TYPE_MAP
-        && ushim_map_slot_type_accepts_bytes(typeMapKey(type), keySize)
+        && ushim_type_kind(type) == TYPE_MAP
+        && ushim_map_slot_type_accepts_bytes(ushim_type_map_key_type(type), keySize)
         && valueType
-        && valueType->kind == TYPE_STR
-        && valueType->size == (int)sizeof(char *);
+        && ushim_type_kind(valueType) == TYPE_STR
+        && ushim_type_size(valueType) == (int)sizeof(char *);
 }
 
 static int ushim_map_type_accepts_string_key_string_value(const Type *type)
 {
-    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
-    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    const Type *keyType = ushim_type_map_key_type(type);
+    const Type *valueType = ushim_type_map_value_type(type);
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && keyType
-        && keyType->kind == TYPE_STR
-        && keyType->size == (int)sizeof(char *)
+        && ushim_type_kind(keyType) == TYPE_STR
+        && ushim_type_size(keyType) == (int)sizeof(char *)
         && valueType
-        && valueType->kind == TYPE_STR
-        && valueType->size == (int)sizeof(char *);
+        && ushim_type_kind(valueType) == TYPE_STR
+        && ushim_type_size(valueType) == (int)sizeof(char *);
 }
 
 static int ushim_count_from_bytes(int byteCount, int itemSize, int *count)
@@ -1933,12 +1938,12 @@ static int ushim_count_from_bytes(int byteCount, int itemSize, int *count)
 
 static int ushim_make_slot_from_bytes(const Type *type, const void *bytes, int size, UmkaStackSlot *slot)
 {
-    if (!type || !bytes || !slot || size != type->size)
+    if (!type || !bytes || !slot || size != ushim_type_size(type))
         return 1;
 
     memset(slot, 0, sizeof(*slot));
 
-    switch (type->kind)
+    switch (ushim_type_kind(type))
     {
         case TYPE_INT8:
         {
@@ -2055,12 +2060,14 @@ static int ushim_map_set_bytes_item(
     const void *key,
     const void *value)
 {
-    const Type *keyType = typeMapKey(type);
-    const Type *valueType = typeMapItem(type);
+    const Type *keyType = ushim_type_map_key_type(type);
+    const Type *valueType = ushim_type_map_value_type(type);
+    const int keySize = ushim_type_size(keyType);
+    const int valueSize = ushim_type_size(valueType);
     UmkaStackSlot keySlot = {0};
     UmkaStackSlot valueSlot = {0};
-    if (ushim_make_slot_from_bytes(keyType, key, keyType->size, &keySlot) != 0
-        || ushim_make_slot_from_bytes(valueType, value, valueType->size, &valueSlot) != 0)
+    if (ushim_make_slot_from_bytes(keyType, key, keySize, &keySlot) != 0
+        || ushim_make_slot_from_bytes(valueType, value, valueSize, &valueSlot) != 0)
     {
         return 1;
     }
@@ -2075,13 +2082,14 @@ static int ushim_map_set_string_key_bytes_value_item(
     const char *key,
     const void *value)
 {
-    const Type *valueType = typeMapItem(type);
+    const Type *valueType = ushim_type_map_value_type(type);
+    const int valueSize = ushim_type_size(valueType);
     UmkaStackSlot keySlot = {0};
     UmkaStackSlot valueSlot = {0};
     keySlot.ptrVal = key ? umkaMakeStr(umka, key) : NULL;
 
     int status = 1;
-    if (ushim_make_slot_from_bytes(valueType, value, valueType->size, &valueSlot) == 0)
+    if (ushim_make_slot_from_bytes(valueType, value, valueSize, &valueSlot) == 0)
         status = umkaSetMapItem(umka, (UmkaMap *)map, keySlot, valueSlot) ? 0 : 1;
 
     if (keySlot.ptrVal)
@@ -2097,13 +2105,14 @@ static int ushim_map_set_bytes_key_string_value_item(
     const void *key,
     const char *value)
 {
-    const Type *keyType = typeMapKey(type);
+    const Type *keyType = ushim_type_map_key_type(type);
+    const int keySize = ushim_type_size(keyType);
     UmkaStackSlot keySlot = {0};
     UmkaStackSlot valueSlot = {0};
     valueSlot.ptrVal = value ? umkaMakeStr(umka, value) : NULL;
 
     int status = 1;
-    if (ushim_make_slot_from_bytes(keyType, key, keyType->size, &keySlot) == 0)
+    if (ushim_make_slot_from_bytes(keyType, key, keySize, &keySlot) == 0)
         status = umkaSetMapItem(umka, (UmkaMap *)map, keySlot, valueSlot) ? 0 : 1;
 
     if (valueSlot.ptrVal)
@@ -2142,17 +2151,19 @@ static int ushim_set_map_bytes(
     const void *values,
     int valueBytes)
 {
-    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
-    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    const Type *keyType = ushim_type_map_key_type(type);
+    const Type *valueType = ushim_type_map_value_type(type);
+    const int keySize = ushim_type_size(keyType);
+    const int valueSize = ushim_type_size(valueType);
     int keyCount = 0;
     int valueCount = 0;
     if (!umka
         || !map
         || !keyType
         || !valueType
-        || !ushim_map_type_accepts_bytes(type, keyType ? keyType->size : 0, valueType ? valueType->size : 0)
-        || ushim_count_from_bytes(keyBytes, keyType->size, &keyCount) != 0
-        || ushim_count_from_bytes(valueBytes, valueType->size, &valueCount) != 0
+        || !ushim_map_type_accepts_bytes(type, keySize, valueSize)
+        || ushim_count_from_bytes(keyBytes, keySize, &keyCount) != 0
+        || ushim_count_from_bytes(valueBytes, valueSize, &valueCount) != 0
         || keyCount != valueCount
         || (!keys && keyCount > 0)
         || (!values && valueCount > 0)
@@ -2168,8 +2179,8 @@ static int ushim_set_map_bytes(
         if (ushim_map_set_bytes_item(umka, map, type, key, value) != 0)
             return 1;
 
-        key += keyType->size;
-        value += valueType->size;
+        key += keySize;
+        value += valueSize;
     }
 
     return 0;
@@ -2184,14 +2195,15 @@ static int ushim_set_map_string_key_bytes_value(
     const void *values,
     int valueBytes)
 {
-    const Type *valueType = type && type->kind == TYPE_MAP ? typeMapItem(type) : NULL;
+    const Type *valueType = ushim_type_map_value_type(type);
+    const int valueSize = ushim_type_size(valueType);
     int valueCount = 0;
     if (!umka
         || !map
         || !valueType
-        || !ushim_map_type_accepts_string_key_bytes_value(type, valueType ? valueType->size : 0)
+        || !ushim_map_type_accepts_string_key_bytes_value(type, valueSize)
         || keyCount < 0
-        || ushim_count_from_bytes(valueBytes, valueType->size, &valueCount) != 0
+        || ushim_count_from_bytes(valueBytes, valueSize, &valueCount) != 0
         || keyCount != valueCount
         || (!keys && keyCount > 0)
         || (!values && valueCount > 0)
@@ -2206,7 +2218,7 @@ static int ushim_set_map_string_key_bytes_value(
         if (ushim_map_set_string_key_bytes_value_item(umka, map, type, keys[i], value) != 0)
             return 1;
 
-        value += valueType->size;
+        value += valueSize;
     }
 
     return 0;
@@ -2221,14 +2233,15 @@ static int ushim_set_map_bytes_key_string_value(
     const char **values,
     int valueCount)
 {
-    const Type *keyType = type && type->kind == TYPE_MAP ? typeMapKey(type) : NULL;
+    const Type *keyType = ushim_type_map_key_type(type);
+    const int keySize = ushim_type_size(keyType);
     int keyCount = 0;
     if (!umka
         || !map
         || !keyType
-        || !ushim_map_type_accepts_bytes_key_string_value(type, keyType ? keyType->size : 0)
+        || !ushim_map_type_accepts_bytes_key_string_value(type, keySize)
         || valueCount < 0
-        || ushim_count_from_bytes(keyBytes, keyType->size, &keyCount) != 0
+        || ushim_count_from_bytes(keyBytes, keySize, &keyCount) != 0
         || keyCount != valueCount
         || (!keys && keyCount > 0)
         || (!values && valueCount > 0)
@@ -2243,7 +2256,7 @@ static int ushim_set_map_bytes_key_string_value(
         if (ushim_map_set_bytes_key_string_value_item(umka, map, type, key, values[i]) != 0)
             return 1;
 
-        key += keyType->size;
+        key += keySize;
     }
 
     return 0;
@@ -2762,7 +2775,7 @@ static DynArray *ushim_context_result_dynarray(UmkaFuncContext *function)
 {
     const Type *type = ushim_context_get_result_type(function);
     UmkaStackSlot *slot = ushim_result(function);
-    if (!type || type->kind != TYPE_DYNARRAY || !slot || !slot->ptrVal)
+    if (ushim_type_kind(type) != TYPE_DYNARRAY || !slot || !slot->ptrVal)
         return NULL;
 
     return (DynArray *)slot->ptrVal;
@@ -2781,7 +2794,7 @@ USHIM_EXPORT int ushim_context_copy_result_dynarray_data(UmkaFuncContext *functi
     int byteCount = 0;
     if (!array
         || !type
-        || type->kind != TYPE_DYNARRAY
+        || ushim_type_kind(type) != TYPE_DYNARRAY
         || ushim_type_element_has_references(type)
         || ushim_dynarray_byte_count(array, &byteCount) != 0
         || size != byteCount
@@ -2934,7 +2947,7 @@ static int ushim_map_count(const Map *map)
 static int ushim_map_type_accepts_copy(const Type *type, int keySize, int valueSize)
 {
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && !ushim_type_map_key_has_references(type)
         && !ushim_type_map_value_has_references(type)
         && ushim_type_map_key_size(type) > 0
@@ -2946,7 +2959,7 @@ static int ushim_map_type_accepts_copy(const Type *type, int keySize, int valueS
 static int ushim_map_type_accepts_string_key_copy(const Type *type, int valueSize)
 {
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && ushim_type_map_key_kind(type) == TYPE_STR
         && !ushim_type_map_value_has_references(type)
         && ushim_type_map_key_size(type) == (int)sizeof(char *)
@@ -2957,7 +2970,7 @@ static int ushim_map_type_accepts_string_key_copy(const Type *type, int valueSiz
 static int ushim_map_type_accepts_string_value_copy(const Type *type, int keySize)
 {
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && !ushim_type_map_key_has_references(type)
         && ushim_type_map_value_kind(type) == TYPE_STR
         && ushim_type_map_key_size(type) > 0
@@ -2968,7 +2981,7 @@ static int ushim_map_type_accepts_string_value_copy(const Type *type, int keySiz
 static int ushim_map_type_accepts_string_copy(const Type *type)
 {
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && ushim_type_map_key_kind(type) == TYPE_STR
         && ushim_type_map_value_kind(type) == TYPE_STR
         && ushim_type_map_key_size(type) == (int)sizeof(char *)
@@ -2980,17 +2993,17 @@ static int ushim_map_type_accepts_dynarray_value_copy(const Type *type, int keyS
     const Type *valueType = ushim_type_map_value_type(type);
     const Type *elementType = ushim_type_element_type(valueType);
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && !ushim_type_map_key_has_references(type)
         && valueType
-        && valueType->kind == TYPE_DYNARRAY
-        && valueType->size == (int)sizeof(DynArray)
+        && ushim_type_kind(valueType) == TYPE_DYNARRAY
+        && ushim_type_size(valueType) == (int)sizeof(DynArray)
         && elementType
-        && !elementType->isGarbageCollected
+        && !ushim_type_has_references(elementType)
         && ushim_type_map_key_size(type) > 0
         && keySize == ushim_type_map_key_size(type)
         && elementSize > 0
-        && elementSize == elementType->size;
+        && elementSize == ushim_type_size(elementType);
 }
 
 static int ushim_map_type_accepts_string_key_dynarray_value_copy(const Type *type, int elementSize)
@@ -2998,26 +3011,26 @@ static int ushim_map_type_accepts_string_key_dynarray_value_copy(const Type *typ
     const Type *valueType = ushim_type_map_value_type(type);
     const Type *elementType = ushim_type_element_type(valueType);
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && ushim_type_map_key_kind(type) == TYPE_STR
         && ushim_type_map_key_size(type) == (int)sizeof(char *)
         && valueType
-        && valueType->kind == TYPE_DYNARRAY
-        && valueType->size == (int)sizeof(DynArray)
+        && ushim_type_kind(valueType) == TYPE_DYNARRAY
+        && ushim_type_size(valueType) == (int)sizeof(DynArray)
         && elementType
-        && !elementType->isGarbageCollected
+        && !ushim_type_has_references(elementType)
         && elementSize > 0
-        && elementSize == elementType->size;
+        && elementSize == ushim_type_size(elementType);
 }
 
 static int ushim_map_type_accepts_string_array_value_copy(const Type *type, int keySize)
 {
     const Type *valueType = ushim_type_map_value_type(type);
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && !ushim_type_map_key_has_references(type)
         && valueType
-        && valueType->size == (int)sizeof(DynArray)
+        && ushim_type_size(valueType) == (int)sizeof(DynArray)
         && ushim_dynarray_type_accepts_strings(valueType)
         && ushim_type_map_key_size(type) > 0
         && keySize == ushim_type_map_key_size(type);
@@ -3027,11 +3040,11 @@ static int ushim_map_type_accepts_string_key_string_array_value_copy(const Type 
 {
     const Type *valueType = ushim_type_map_value_type(type);
     return type
-        && type->kind == TYPE_MAP
+        && ushim_type_kind(type) == TYPE_MAP
         && ushim_type_map_key_kind(type) == TYPE_STR
         && ushim_type_map_key_size(type) == (int)sizeof(char *)
         && valueType
-        && valueType->size == (int)sizeof(DynArray)
+        && ushim_type_size(valueType) == (int)sizeof(DynArray)
         && ushim_dynarray_type_accepts_strings(valueType);
 }
 
@@ -3601,7 +3614,7 @@ static Map *ushim_context_result_map(UmkaFuncContext *function)
 {
     const Type *type = ushim_context_get_result_type(function);
     UmkaStackSlot *slot = ushim_result(function);
-    if (!type || type->kind != TYPE_MAP || !slot || !slot->ptrVal)
+    if (ushim_type_kind(type) != TYPE_MAP || !slot || !slot->ptrVal)
         return NULL;
 
     return (Map *)slot->ptrVal;
@@ -3840,19 +3853,19 @@ static const Type *ushim_callback_get_result_type(UmkaStackSlot *params, UmkaSta
 USHIM_EXPORT int ushim_callback_get_parameter_kind(UmkaStackSlot *params, int index)
 {
     const Type *type = ushim_callback_get_parameter_type(params, index);
-    return type ? type->kind : TYPE_NONE;
+    return ushim_type_kind(type);
 }
 
 USHIM_EXPORT int ushim_callback_get_parameter_size(UmkaStackSlot *params, int index)
 {
     const Type *type = ushim_callback_get_parameter_type(params, index);
-    return type ? type->size : 0;
+    return ushim_type_size(type);
 }
 
 USHIM_EXPORT int ushim_callback_get_parameter_item_count(UmkaStackSlot *params, int index)
 {
     const Type *type = ushim_callback_get_parameter_type(params, index);
-    return type ? type->numItems : 0;
+    return ushim_type_item_count(type);
 }
 
 USHIM_EXPORT int ushim_callback_get_parameter_element_kind(UmkaStackSlot *params, int index)
@@ -3963,7 +3976,7 @@ USHIM_EXPORT int ushim_callback_get_parameter_is_variadic_parameter_list(UmkaSta
 USHIM_EXPORT int ushim_callback_get_parameter_has_references(UmkaStackSlot *params, int index)
 {
     const Type *type = ushim_callback_get_parameter_type(params, index);
-    return type && type->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(type);
 }
 
 USHIM_EXPORT const char *ushim_callback_get_parameter_type_name(UmkaStackSlot *params, int index)
@@ -3973,49 +3986,45 @@ USHIM_EXPORT const char *ushim_callback_get_parameter_type_name(UmkaStackSlot *p
 
 USHIM_EXPORT int ushim_callback_get_parameter_is_enum(UmkaStackSlot *params, int index)
 {
-    return ushim_enum_type(ushim_callback_get_parameter_type(params, index)) ? 1 : 0;
+    return ushim_type_is_enum(ushim_callback_get_parameter_type(params, index));
 }
 
 USHIM_EXPORT int ushim_callback_get_parameter_enum_member_count(UmkaStackSlot *params, int index)
 {
-    const Type *type = ushim_enum_type(ushim_callback_get_parameter_type(params, index));
-    return type ? type->numItems : 0;
+    return ushim_type_enum_member_count(ushim_callback_get_parameter_type(params, index));
 }
 
 USHIM_EXPORT const char *ushim_callback_get_parameter_enum_member_name(UmkaStackSlot *params, int parameterIndex, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_callback_get_parameter_type(params, parameterIndex), memberIndex);
-    return member ? member->name : NULL;
+    return ushim_type_enum_member_name(ushim_callback_get_parameter_type(params, parameterIndex), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_callback_get_parameter_enum_member_signed_value(UmkaStackSlot *params, int parameterIndex, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_callback_get_parameter_type(params, parameterIndex), memberIndex);
-    return member ? member->val.intVal : 0;
+    return ushim_type_enum_member_signed_value(ushim_callback_get_parameter_type(params, parameterIndex), memberIndex);
 }
 
 USHIM_EXPORT uint64_t ushim_callback_get_parameter_enum_member_unsigned_value(UmkaStackSlot *params, int parameterIndex, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_callback_get_parameter_type(params, parameterIndex), memberIndex);
-    return member ? member->val.uintVal : 0;
+    return ushim_type_enum_member_unsigned_value(ushim_callback_get_parameter_type(params, parameterIndex), memberIndex);
 }
 
 USHIM_EXPORT int ushim_callback_get_result_kind(UmkaStackSlot *params, UmkaStackSlot *result)
 {
     const Type *type = ushim_callback_get_result_type(params, result);
-    return type ? type->kind : TYPE_VOID;
+    return type ? ushim_type_kind(type) : TYPE_VOID;
 }
 
 USHIM_EXPORT int ushim_callback_get_result_size(UmkaStackSlot *params, UmkaStackSlot *result)
 {
     const Type *type = ushim_callback_get_result_type(params, result);
-    return type ? type->size : 0;
+    return ushim_type_size(type);
 }
 
 USHIM_EXPORT int ushim_callback_get_result_item_count(UmkaStackSlot *params, UmkaStackSlot *result)
 {
     const Type *type = ushim_callback_get_result_type(params, result);
-    return type ? type->numItems : 0;
+    return ushim_type_item_count(type);
 }
 
 USHIM_EXPORT int ushim_callback_get_result_element_kind(UmkaStackSlot *params, UmkaStackSlot *result)
@@ -4126,7 +4135,7 @@ USHIM_EXPORT int ushim_callback_get_result_is_variadic_parameter_list(UmkaStackS
 USHIM_EXPORT int ushim_callback_get_result_has_references(UmkaStackSlot *params, UmkaStackSlot *result)
 {
     const Type *type = ushim_callback_get_result_type(params, result);
-    return type && type->isGarbageCollected ? 1 : 0;
+    return ushim_type_has_references(type);
 }
 
 USHIM_EXPORT const char *ushim_callback_get_result_type_name(UmkaStackSlot *params, UmkaStackSlot *result)
@@ -4137,31 +4146,27 @@ USHIM_EXPORT const char *ushim_callback_get_result_type_name(UmkaStackSlot *para
 
 USHIM_EXPORT int ushim_callback_get_result_is_enum(UmkaStackSlot *params, UmkaStackSlot *result)
 {
-    return ushim_enum_type(ushim_callback_get_result_type(params, result)) ? 1 : 0;
+    return ushim_type_is_enum(ushim_callback_get_result_type(params, result));
 }
 
 USHIM_EXPORT int ushim_callback_get_result_enum_member_count(UmkaStackSlot *params, UmkaStackSlot *result)
 {
-    const Type *type = ushim_enum_type(ushim_callback_get_result_type(params, result));
-    return type ? type->numItems : 0;
+    return ushim_type_enum_member_count(ushim_callback_get_result_type(params, result));
 }
 
 USHIM_EXPORT const char *ushim_callback_get_result_enum_member_name(UmkaStackSlot *params, UmkaStackSlot *result, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_callback_get_result_type(params, result), memberIndex);
-    return member ? member->name : NULL;
+    return ushim_type_enum_member_name(ushim_callback_get_result_type(params, result), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_callback_get_result_enum_member_signed_value(UmkaStackSlot *params, UmkaStackSlot *result, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_callback_get_result_type(params, result), memberIndex);
-    return member ? member->val.intVal : 0;
+    return ushim_type_enum_member_signed_value(ushim_callback_get_result_type(params, result), memberIndex);
 }
 
 USHIM_EXPORT uint64_t ushim_callback_get_result_enum_member_unsigned_value(UmkaStackSlot *params, UmkaStackSlot *result, int memberIndex)
 {
-    const EnumConst *member = ushim_enum_member(ushim_callback_get_result_type(params, result), memberIndex);
-    return member ? member->val.uintVal : 0;
+    return ushim_type_enum_member_unsigned_value(ushim_callback_get_result_type(params, result), memberIndex);
 }
 
 USHIM_EXPORT int64_t ushim_callback_get_param_int(UmkaStackSlot *params, int index)
@@ -4183,7 +4188,7 @@ USHIM_EXPORT double ushim_callback_get_param_real(UmkaStackSlot *params, int ind
     if (!slot)
         return 0.0;
 
-    return type && type->kind == TYPE_REAL32 ? slot->real32Val : slot->realVal;
+    return ushim_type_kind(type) == TYPE_REAL32 ? slot->real32Val : slot->realVal;
 }
 
 USHIM_EXPORT void *ushim_callback_get_param_ptr(UmkaStackSlot *params, int index)
@@ -4221,7 +4226,7 @@ USHIM_EXPORT int ushim_callback_get_param_data(UmkaStackSlot *params, int index,
 {
     UmkaStackSlot *slot = ushim_param(params, index);
     const Type *type = ushim_callback_get_parameter_type(params, index);
-    if (!slot || !type || !buffer || size != type->size || type->isGarbageCollected)
+    if (!slot || !type || !buffer || size != ushim_type_size(type) || ushim_type_has_references(type))
         return 1;
 
     memcpy(buffer, slot, size);
@@ -4232,7 +4237,7 @@ static DynArray *ushim_callback_param_dynarray(UmkaStackSlot *params, int index)
 {
     const Type *type = ushim_callback_get_parameter_type(params, index);
     UmkaStackSlot *slot = ushim_param(params, index);
-    if (!type || type->kind != TYPE_DYNARRAY || !slot)
+    if (ushim_type_kind(type) != TYPE_DYNARRAY || !slot)
         return NULL;
 
     return (DynArray *)slot;
@@ -4251,7 +4256,7 @@ USHIM_EXPORT int ushim_callback_copy_param_dynarray_data(UmkaStackSlot *params, 
     int byteCount = 0;
     if (!array
         || !type
-        || type->kind != TYPE_DYNARRAY
+        || ushim_type_kind(type) != TYPE_DYNARRAY
         || ushim_type_element_has_references(type)
         || ushim_dynarray_byte_count(array, &byteCount) != 0
         || size != byteCount
@@ -4368,7 +4373,7 @@ static Map *ushim_callback_param_map(UmkaStackSlot *params, int index)
 {
     const Type *type = ushim_callback_get_parameter_type(params, index);
     UmkaStackSlot *slot = ushim_param(params, index);
-    if (!type || type->kind != TYPE_MAP || !slot)
+    if (ushim_type_kind(type) != TYPE_MAP || !slot)
         return NULL;
 
     return (Map *)slot;
@@ -4706,7 +4711,7 @@ USHIM_EXPORT int ushim_callback_set_result_data(UmkaStackSlot *params, UmkaStack
 {
     const Type *type = ushim_callback_get_result_type(params, result);
     UmkaStackSlot *slot = umkaGetResult(params, result);
-    if (!type || !slot || !slot->ptrVal || !value || size != type->size || type->isGarbageCollected)
+    if (!type || !slot || !slot->ptrVal || !value || size != ushim_type_size(type) || ushim_type_has_references(type))
         return 1;
 
     memcpy(slot->ptrVal, value, size);

@@ -102,6 +102,13 @@ The native shim builds against a local Umka checkout. On this machine the source
 C:\dev\umka-lang
 ```
 
+The current native baseline is Andrea's public fork:
+
+```text
+https://github.com/andreamancuso/umka-lang.git
+261f62fbf76549a93284cee24f6c40764cdbb21b
+```
+
 Set `UMKA_ROOT` when building elsewhere.
 
 ```powershell

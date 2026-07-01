@@ -11,7 +11,7 @@ on:
 
 env:
   UMKA_REPOSITORY: andreamancuso/umka-lang
-  UMKA_REF: 4cbf92ac216be0e4088ddc61aa0589df43ed066d
+  UMKA_REF: 261f62fbf76549a93284cee24f6c40764cdbb21b
 
 jobs:
   workflow-policy:
